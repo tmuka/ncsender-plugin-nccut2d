@@ -13,7 +13,8 @@ export function partMesh2d(p) {
   // What's cut down to each height (0 for through)
   const byZ = new Map();
   for (const o of ops) {
-    const area = o.kind === 'pocket' ? o.region : o.kind === 'inside' ? o.loops : null;
+    // An inside cut to a depth cuts only a ring the bit's width: the middle stands
+    const area = o.kind === 'pocket' ? o.region : o.kind === 'inside' ? (o.zBottom > 0 ? C.difference(o.loops, C.offset(o.loops, -o.tool.diameter)) : o.loops) : null;
     if (!area?.length) continue;
     const z = Math.max(0, o.zBottom);
     byZ.set(z, [...(byZ.get(z) || []), ...area]);
@@ -28,7 +29,11 @@ export function partMesh2d(p) {
     if (z > 0 && own.length) levels.push({ z, region: own });
     deeper = C.union([...deeper, ...all]);
   }
-  const top = C.cleanLoops(C.difference(F, deeper), 0.01);
+  // Parts cut out of a window stand in it: their own area, less the cuts
+  // inside them (not the window round them)
+  const inner = C.union(cutouts.filter((o) => o.inner).flatMap((o) => o.region));
+  const innerCuts = inner.length ? C.union([...byZ.values()].flat().filter((l) => C.pointInRegion(l[0], inner))) : [];
+  const top = C.cleanLoops(C.union([...C.difference(F, deeper), ...C.difference(inner, innerCuts)]), 0.01);
   levels.push({ z: T, region: top });
 
   const heightAt = (q) => {

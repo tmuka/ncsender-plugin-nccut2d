@@ -11,7 +11,7 @@
 //   'off'
 // and depth is in mm, or null for through (the stock and the break-through).
 import * as C from './clip.js';
-import { feeds, tabDefaults } from './tools.js';
+import { feeds, tabDefaults, FINISHES } from './tools.js';
 import { len } from './units.js';
 
 export const CUTS = ['outside', 'inside', 'online', 'pocket', 'off'];
@@ -65,8 +65,12 @@ export function analyze2d(shapes) {
     let k = 0, top = i;
     for (let j = n.parent; j >= 0 && sameCentre(i, j); j = nest[j].parent) { k++; top = j; }
     const inner = nest.some((m, j) => m.parent === i && sameCentre(i, j));
-    if ((k || inner) && nest[top].depth > 0) { n.step = k; n.last = !inner; }
+    if ((k || inner) && nest[top].depth > 0) { n.step = k; n.last = !inner; n.top = top; }
   });
+  // How many circles each stack has
+  const of = new Map();
+  nest.forEach((n) => { if (n.top !== undefined && n.step !== null) of.set(n.top, (of.get(n.top) || 0) + 1); });
+  nest.forEach((n) => { if (n.top !== undefined && n.step !== null) n.of = of.get(n.top); });
   return { shapes: moved, loops, areas, nest, circles: circ, size: [maxX - minX, maxY - minY] };
 }
 
@@ -157,7 +161,11 @@ export function choiceFor(a, job, i, group = null) {
   const own = job.shapes?.[i] || (group && job.groups?.[group.get(i)]), layer = job.layers?.[s.layer ?? s.color];
   const cut = own?.cut || layer?.cut || defaultCut(a, i);
   const n = a.nest[i], stepped = cut === 'pocket' && n.step !== null && n.step !== undefined;
-  const depth = own?.depth !== undefined ? own.depth : layer?.depth !== undefined ? layer.depth : stepped ? job.depths.pocket * (n.step + 1) : cut === 'pocket' || cut === 'online' ? job.depths[cut] : null;
+  // A counterbore's steps: a pocket depth each, inside the stock's
+  // thickness (steps share it out when it's thin), the hole through
+  const T = job.stock?.thickness;
+  const stepDepth = () => { const d = job.depths.pocket * (n.step + 1); return T > 0 ? Math.min(d, (T * (n.step + 1)) / (n.of || 2)) : d; };
+  const depth = own?.depth !== undefined ? own.depth : layer?.depth !== undefined ? layer.depth : stepped ? stepDepth() : cut === 'pocket' || cut === 'online' ? job.depths[cut] : null;
   // An open line can only be cut on the line (or not at all)
   return { cut: cut === 'online' || cut === 'off' || a.loops[i] ? cut : 'online', depth };
 }
@@ -202,6 +210,7 @@ export function plan2d(a, tools, job, limits = {}) {
     const c = choiceFor(a, job, i, gOf);
     if (c.cut === 'off') return;
     const z = bottomOf(c.depth);
+    if (z >= T - 1e-6) return; // no depth: nothing to cut
     const k = `${c.cut}@${z}`;
     if (!groups.has(k)) groups.set(k, { cut: c.cut, z, depth: c.depth, idx: [] });
     groups.get(k).idx.push(i);
@@ -213,14 +222,8 @@ export function plan2d(a, tools, job, limits = {}) {
   const of = (cut) => all.filter((g) => g.cut === cut).sort((x, y) => y.z - x.z);
   const coverage = (region, r) => C.area(C.offset(C.offset(region, -r), r)) / Math.max(C.area(region), TINY);
 
-  // On the line: the smallest flat end mill that reaches (a groove its width)
-  for (const g of of('online')) {
-    const tool = flats.slice().reverse().find((t) => fluteOk(t, deep(g.z)));
-    if (!tool) { warnings.push({ kind: 'notool', text: `No end mill reaches ${name(g.depth)} for the lines.` }); continue; }
-    const lines = g.idx.map((i) => ({ pts: a.shapes[i].pts, closed: !!a.loops[i] }));
-    ops.push({ id: `online@${g.z}`, kind: 'online', label: 'Cut on the lines', tool: take(tool), zTop: T, zBottom: g.z, lines, count: g.idx.length, detail: `${g.idx.length} line${g.idx.length > 1 ? 's' : ''} · ${name(g.depth)}` });
-  }
-
+  // Planned pockets, insides, outsides, then lines (what's in use counts
+  // for the next pick); cut in RANK order (below)
   // Pockets: each shape's inside, less the shapes inside it that aren't
   // pockets at this depth (islands); the largest end mill that clears most
   for (const g of of('pocket')) {
@@ -237,40 +240,44 @@ export function plan2d(a, tools, job, limits = {}) {
   }
 
   // A profile's end mill: one in use if it fits, else the one nearest 1/4"
+  const nearQuarter = (list) => list.slice().sort((x, y) => Math.abs(x.diameter - 6.35) - Math.abs(y.diameter - 6.35))[0] || null;
   const profileTool = (depth, fits) => {
     const ok = flats.filter((t) => t.diameter <= maxD && fluteOk(t, depth) && fits(t));
-    return ok.find((t) => used.has(t.id)) || ok.sort((x, y) => Math.abs(x.diameter - 6.35) - Math.abs(y.diameter - 6.35))[0] || null;
+    return ok.find((t) => used.has(t.id)) || nearQuarter(ok);
   };
 
-  // Inside: holes and windows, each loop on its own, before the outside
+  // Parts (Outside, not a pocket's island): those inside nothing, and those
+  // drawn in another part's window (cut before the window frees them)
+  const isPart = (j) => cutOf[j] === 'outside' && a.loops[j] && !inPocket(j);
+  const nested = (j) => a.nest[j].depth > 0;
+
+  // Inside: holes and windows, each loop on its own, before the outside.
   // Each shape its own end mill: the largest already in use that fits it,
   // else the one nearest 1/4"; shapes with the same one are one operation.
   // A big hole isn't cut with a small bit just because a small hole is.
-  for (const g of of('inside')) {
-    // Room to move: 0.1 mm a side more than the bit (one just the hole's
-    // size would only plunge)
-    const fits = (t, l) => C.offset([l], -(t.diameter / 2 + 0.1)).length > 0;
+  // Room to move: the finishing allowance and 0.1 mm a side more than the
+  // bit (a hole just the bit's size would only plunge)
+  const allow = (FINISHES[job.finish] || FINISHES.balanced).allowance;
+  const fits = (t, l) => C.offset([l], -(t.diameter / 2 + allow + 0.1)).length > 0;
+  function insides(g, idx, tabs) {
     const ok = flats.filter((t) => t.diameter <= maxD && fluteOk(t, deep(g.z)));
+    const quarter = nearQuarter(ok);
     const byTool = new Map();
     let none = 0;
-    for (const i of g.idx) {
+    for (const i of idx) {
       const l = a.loops[i], can = ok.filter((t) => fits(t, l));
-      const t = can.find((x) => used.has(x.id)) || can.sort((x, y) => Math.abs(x.diameter - 6.35) - Math.abs(y.diameter - 6.35))[0];
+      const t = can.find((x) => used.has(x.id)) || nearQuarter(can);
       if (!t) { none++; continue; }
       if (!byTool.has(t)) byTool.set(t, []);
       byTool.get(t).push(l);
     }
-    if (none) warnings.push({ kind: 'notool', text: `No end mill fits inside ${none > 1 ? `${none} shapes` : 'a shape'} cut ${name(g.depth)}: left uncut.` });
-    // Fewer tool changes: each shape to the largest of the chosen end mills
-    // that fits it (a 6 mm bit for two holes the 1/8" already cutting the
-    // others can do is dropped). Each time the one with fewest shapes goes,
-    // as long as its shapes fit another and no other cut needs it.
+    if (none) warnings.push({ kind: 'notool', text: `No end mill fits inside ${none > 1 ? `${none} shapes` : 'a shape'} cut ${name(g.depth)} with room to move: left uncut.` });
+    // Fewer tool changes: a bit only a few shapes got goes, its shapes to
+    // the largest other chosen bit that fits them (a 6 mm bit for two
+    // holes the 1/8" cutting the others can do), unless another cut needs
+    // it (in use, or nearest 1/4": the outside cut, planned next, takes it)
     for (let again = true; again && byTool.size > 1;) {
       again = false;
-      // Only a bit nothing else uses (one the pockets use stays); the one
-      // with fewest shapes that can go
-      // (the bit nearest 1/4" stays too: the outside cut, planned next, takes it)
-      const quarter = ok.slice().sort((x, y) => Math.abs(x.diameter - 6.35) - Math.abs(y.diameter - 6.35))[0];
       for (const [tool, list] of [...byTool].filter(([t]) => !used.has(t.id) && t !== quarter).sort((x, y) => x[1].length - y[1].length)) {
         const others = [...byTool.keys()].filter((t) => t !== tool).sort((x, y) => y.diameter - x.diameter);
         if (!list.every((l) => others.some((t) => fits(t, l)))) continue;
@@ -280,21 +287,45 @@ export function plan2d(a, tools, job, limits = {}) {
         break;
       }
     }
-    [...byTool].sort((x, y) => y[0].diameter - x[0].diameter).forEach(([tool, cut], n) => {
-      ops.push({ id: `inside@${g.z}${n ? `#${tool.id}` : ''}`, kind: 'inside', label: cut.length > 1 ? `Cut ${cut.length} shapes inside` : 'Cut inside the shape', tool: take(tool), zTop: T, zBottom: g.z, loops: cut, region: cut, tabs: false, detail: name(g.depth) });
-    });
+    for (const [tool, cut] of [...byTool].sort((x, y) => y[0].diameter - x[0].diameter)) {
+      ops.push({ id: `inside@${g.z}#${tool.id}${tabs ? ':tabs' : ''}`, kind: 'inside', label: `${tabs ? 'Cut round the windows' : cut.length > 1 ? `Cut ${cut.length} shapes inside` : 'Cut inside the shape'}`, tool: take(tool), zTop: T, zBottom: g.z, loops: cut, region: cut, tabs: tabs && g.z < 0 && job.tabs.enabled, detail: `${name(g.depth)}${tabs && g.z < 0 && job.tabs.enabled ? ' · tabs hold the parts in them' : ''}` });
+    }
+  }
+  for (const g of of('inside')) {
+    // A window with a part in it keeps its middle on tabs: the part is cut
+    // first, and would drop with the middle
+    const holds = (i) => a.shapes.some((_, j) => isPart(j) && isInside(a, j, i));
+    insides(g, g.idx.filter((i) => !holds(i)), false);
+    insides(g, g.idx.filter(holds), true);
   }
 
-  // Outside: the parts, with tabs when cut through
+  // Outside: the parts, with tabs when cut through; parts in a window cut
+  // on their own (in one outline with the frame they'd never be cut)
   for (const g of of('outside')) {
-    const parts = g.idx.filter((i) => !inPocket(i));
-    if (!parts.length) continue;
-    const region = joined(parts.map((i) => a.loops[i]));
-    const tool = profileTool(deep(g.z), () => true);
-    if (!tool) { warnings.push({ kind: 'notool', text: `No end mill is long enough to cut out ${name(g.depth)} (${L(deep(g.z))}).` }); continue; }
-    const through = g.z < 0;
-    ops.push({ id: `cutout@${g.z}`, kind: 'cutout', label: 'Cut out the parts', tool: take(tool), zTop: T, zBottom: g.z, region, detail: `${name(g.depth)}${through ? ` · ${job.tabs.enabled ? `${job.tabs.count} tabs each` : 'no tabs'}` : ''}` });
+    for (const inner of [true, false]) {
+      const parts = g.idx.filter((i) => isPart(i) && nested(i) === inner);
+      if (!parts.length) continue;
+      const region = joined(parts.map((i) => a.loops[i]));
+      const tool = profileTool(deep(g.z), () => true);
+      if (!tool) { warnings.push({ kind: 'notool', text: `No end mill is long enough to cut out ${name(g.depth)} (${L(deep(g.z))}).` }); continue; }
+      const through = g.z < 0;
+      ops.push({ id: `cutout${inner ? '-in' : ''}@${g.z}`, kind: 'cutout', inner, label: inner ? 'Cut out the parts in the windows' : 'Cut out the parts', tool: take(tool), zTop: T, zBottom: g.z, region, tabs: through, detail: `${name(g.depth)}${through ? ` · ${job.tabs.enabled ? `${job.tabs.count} tabs each` : 'no tabs'}` : ''}` });
+    }
   }
+
+  // On the line, planned last so a fine bit for a groove doesn't pull the
+  // other cuts onto it: a bit already in use, else the smallest that reaches
+  for (const g of of('online')) {
+    const ok = flats.filter((t) => fluteOk(t, deep(g.z)));
+    const tool = ok.filter((t) => used.has(t.id)).sort((x, y) => x.diameter - y.diameter)[0] || ok.sort((x, y) => x.diameter - y.diameter)[0];
+    if (!tool) { warnings.push({ kind: 'notool', text: `No end mill reaches ${name(g.depth)} for the lines.` }); continue; }
+    const lines = g.idx.map((i) => ({ pts: a.shapes[i].pts, closed: !!a.loops[i] }));
+    ops.push({ id: `online@${g.z}`, kind: 'online', label: 'Cut on the lines', tool: take(tool), zTop: T, zBottom: g.z, lines, count: g.idx.length, detail: `${g.idx.length} line${g.idx.length > 1 ? 's' : ''} · ${name(g.depth)} · a groove ${L(tool.diameter)} wide` });
+  }
+
+  // Cut order: lines, pockets, parts in windows, insides (windows), parts
+  const RANK = (o) => (o.kind === 'online' ? 0 : o.kind === 'pocket' ? 1 : o.kind === 'cutout' && o.inner ? 2 : o.kind === 'inside' ? 3 : 4);
+  ops.sort((x, y) => RANK(x) - RANK(y) || y.zBottom - x.zBottom);
 
   for (const op of ops) {
     const over = job.toolOverride?.[op.id];

@@ -46,8 +46,10 @@ test('defaults: line, inside, outside in that order; through cuts reach the brea
   const { p } = run(sample());
   const kinds = p.ops.map((o) => o.kind);
   assert.ok(kinds.indexOf('online') < kinds.indexOf('inside'));
-  assert.ok(kinds.indexOf('inside') < kinds.indexOf('cutout'));
-  const out = p.ops.find((o) => o.kind === 'cutout');
+  // The boss in the rectangle's window is a part there: cut before the window
+  const inner = p.ops.findIndex((o) => o.kind === 'cutout' && o.inner), outer = p.ops.findIndex((o) => o.kind === 'cutout' && !o.inner);
+  assert.ok(inner >= 0 && inner < kinds.indexOf('inside') && kinds.lastIndexOf('inside') < outer && outer === kinds.length - 1);
+  const out = p.ops[outer];
   assert.equal(out.zBottom, -0.3);
   assert.equal(p.ops.find((o) => o.kind === 'online').zBottom, 5);
   for (const op of p.ops) assert.ok(op.moves.length > 2, op.label);
@@ -165,4 +167,52 @@ test('insides: a big hole gets the big end mill, a small one the small; no extra
   const p = N.toolpaths(N.plan2d(a, lib, N.defaultJob(a, 10)));
   const ins = p.ops.filter((o) => o.kind === 'inside').map((o) => [o.tool.name, o.loops.length]);
   assert.deepEqual(ins, [['1/4" Flat End Mill', 2], ['1/8" Flat End Mill', 2]]);
+});
+
+test('a part drawn in a window is cut out, before the window, which keeps it on tabs', async () => {
+  const shapes = N.readDxf(dxf({ entities: [lwpoly('0', [[0, 0], [100, 0], [100, 100], [0, 100]], true), lwpoly('0', [[10, 10], [90, 10], [90, 90], [10, 90]], true), lwpoly('0', [[30, 30], [70, 30], [70, 70], [30, 70]], true)] })).shapes;
+  const a = N.analyze2d(shapes);
+  const p = N.toolpaths(N.plan2d(a, tools, N.defaultJob(a, 6)));
+  assert.deepEqual(p.ops.map((o) => [o.kind, !!o.inner, !!o.tabs]), [['cutout', true, true], ['inside', false, true], ['cutout', false, true]]);
+  const { hm } = N.simulate(p, 0.25);
+  const at = (x, y) => hm.h[Math.floor((y - hm.y0) / hm.cell) * hm.nx + Math.floor((x - hm.x0) / hm.cell)];
+  assert.ok(at(29.2, 45) <= 2 + 1e-6, `slot round the inner part ${at(29.2, 45)}`);
+  assert.ok(at(31, 45) > 5.9, 'inner part kept');
+  // The part model has the inner part standing in its window
+  const m = N.partMesh2d(p), ph = N.partHeights(m, hm);
+  assert.ok(Math.abs(ph[Math.floor((50 - hm.y0) / hm.cell) * hm.nx + Math.floor((50 - hm.x0) / hm.cell)] - 6) < 1e-6, 'inner part in the model');
+  assert.ok(ph[Math.floor((20 - hm.y0) / hm.cell) * hm.nx + Math.floor((20 - hm.x0) / hm.cell)] < 1e-6, 'window open in the model');
+});
+
+test('a hole just wider than the bit still steps down (no full-depth plunge)', async () => {
+  // Ø6.6 (M6 clearance) with the 1/4" bit: too tight for the roughing pass
+  const shapes = N.readDxf(dxf({ entities: [lwpoly('0', [[0, 0], [40, 0], [40, 40], [0, 40]], true), circle('0', 20, 20, 3.3)] })).shapes;
+  const a = N.analyze2d(shapes);
+  const plain = N.plan2d(a, tools, N.defaultJob(a, 10));
+  assert.notEqual(plain.ops.find((o) => o.kind === 'inside').tool.diameter, 6.35, 'the 1/4" has no room to move there');
+  // Picked by hand anyway: it steps down
+  const id = plain.ops.find((o) => o.kind === 'inside').id;
+  const p = N.toolpaths(N.plan2d(a, tools, { ...N.defaultJob(a, 10), toolOverride: { [id]: 1 } }));
+  const op = p.ops.find((o) => o.kind === 'inside');
+  assert.equal(op.tool.diameter, 6.35);
+  for (let i = 1; i < op.moves.length; i++) {
+    const m = op.moves[i], b = op.moves[i - 1];
+    if (!m.r && b.z - m.z > op.feeds.stepdown + 1e-6) assert.fail(`a ${(b.z - m.z).toFixed(2)} mm step down with ${op.tool.name}`);
+  }
+});
+
+test('resizing keeps tabs off partial cuts; counterbore steps fit thin stock; a 0 depth cuts nothing', async () => {
+  const shapes = N.readDxf(dxf({ entities: [lwpoly('0', [[0, 0], [60, 0], [60, 40], [0, 40]], true), circle('0', 30, 20, 6), circle('0', 30, 20, 4), circle('0', 30, 20, 2), line('0', 5, 5, 50, 5)] })).shapes;
+  const a = N.analyze2d(shapes);
+  const job = N.defaultJob(a, 6);
+  // Steps of a 3-circle stack in 6 mm: 2 and 4 deep, not through
+  assert.deepEqual([1, 2].map((i) => N.choiceFor(a, job, i).depth), [2, 4]);
+  // A part cut 5 mm deep: no tabs; a line 0 deep: no op
+  const g = N.groups2d(a);
+  const p = N.toolpaths(N.plan2d(a, tools, { ...job, groups: { [g.find((x) => x.kind === 'outline').key]: { cut: 'outside', depth: 5 }, [g.find((x) => x.kind === 'line').key]: { cut: 'online', depth: 0 } } }));
+  assert.ok(!p.ops.some((o) => o.kind === 'online'));
+  const cut = p.ops.find((o) => o.kind === 'cutout');
+  assert.equal(cut.tabs, false);
+  assert.ok(cut.moves.filter((m) => !m.r).every((m) => m.z >= 1 - 1e-6 && (m.z <= 1 + 1e-6 || m.z > 2.5 || Math.abs(m.z - 6) < 1e-6 || m.z > 1)), 'no tab lifts');
+  assert.ok(!cut.moves.some((m) => !m.r && Math.abs(m.z - 2) < 1e-6), 'no lifts to a tab top');
 });

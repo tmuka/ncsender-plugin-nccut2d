@@ -520,9 +520,13 @@ function insideProfile(path, loops, r, fd, zTop, zBottom, job, allowance, tabs) 
   const tabJob = { ...job, tabs: { ...job.tabs, enabled: !!tabs } };
   const passes = [{ off: r + allowance, fd }];
   if (allowance > 0) passes.push({ off: r, fd: { ...fd, feed: Math.round(fd.feed * 0.9) }, finish: true });
+  // Loops too tight for the roughing pass get their finishing pass in
+  // normal step-downs (one full-depth step would be a plunge)
+  const roughed = new Set();
   for (const pass of passes) {
     for (const outer of nearestFirst(loops.map((l) => [C.loopArea(l) < 0 ? l.slice().reverse() : l]), path.at).map((g) => g[0])) {
       const shrunk = C.simplify(C.cleanLoops(C.offset([outer], -pass.off), 0.001), 0.005).filter((l) => C.loopArea(l) > 0);
+      if (!pass.finish && shrunk.length) roughed.add(outer);
       for (const pts of shrunk) {
         const loop = new Loop(pts); // counter-clockwise
         const tab = makeTabs(loop.length, tabJob, r, 0);
@@ -530,7 +534,7 @@ function insideProfile(path, loops, r, fd, zTop, zBottom, job, allowance, tabs) 
         path.goTo(x, y, zTop);
         path.feed(x, y, zTop, fd.plunge);
         let s = 0, zFrom = zTop;
-        const levels = pass.finish ? depthLevels(zTop, zBottom, Math.max(fd.stepdown, Math.min(3 * 2 * r, zTop - zBottom))) : depthLevels(zTop, zBottom, fd.stepdown);
+        const levels = pass.finish && roughed.has(outer) ? depthLevels(zTop, zBottom, Math.max(fd.stepdown, Math.min(3 * 2 * r, zTop - zBottom))) : depthLevels(zTop, zBottom, fd.stepdown);
         for (const z of levels) {
           s = rampAndLap(path, loop, s, zFrom, z, pass.fd, tab);
           zFrom = z;
@@ -1007,7 +1011,8 @@ export function toolpaths(p) {
       case 'finish3d': surface3d(path, op.surface, op.tool, fd, op.ridge, 0, op.left ?? LAYER_LEFT, op.steep !== false); break;
       case 'drill': drill(path, op.centers, fd, zTop, op.zBottom, op.tool.diameter); break;
       case 'thread': threads(path, op, fd, p.job.finish); break;
-      case 'cutout': cutout(path, op.region, r, fd, zTop, op.zBottom, p.job, allowance); break;
+      // Tabs only where the cut goes through (op.tabs false: none)
+      case 'cutout': cutout(path, op.region, r, fd, zTop, op.zBottom, op.tabs === false ? { ...p.job, tabs: { ...p.job.tabs, enabled: false } } : p.job, allowance); break;
       case 'inside': insideProfile(path, op.loops, r, fd, zTop, op.zBottom, p.job, allowance, op.tabs); break;
       case 'online': onLine(path, op.lines, fd, zTop, op.zBottom); break;
       // Edges on the model's top stand on any stock left above it (no

@@ -152,8 +152,19 @@ export function mountApp(root, host, engine) {
   // engine (to plan). keep: a job to keep (reopened, or resized)
   async function sized(keep) {
     const shapes = S.scale === 1 ? S.raw : N.transformShapes(S.raw, [S.scale, 0, 0, S.scale, 0, 0]);
+    const before = S.groups;
     S.a = N.analyze2d(shapes);
     S.groups = N.groups2d(S.a);
+    // Group keys carry sizes: after a resize, each group's choice follows its
+    // shapes to their new key
+    if (keep?.groups && before?.length) {
+      const moved = {};
+      for (const g of S.groups) {
+        const old = before.find((o) => o.idx.includes(g.idx[0]));
+        if (old && keep.groups[old.key]) moved[g.key] = keep.groups[old.key];
+      }
+      keep = { ...keep, groups: moved };
+    }
     await engine('load', { shapes });
     const fresh = N.defaultJob(S.a, null);
     S.job = keep ? { ...fresh, ...keep, stock: { ...fresh.stock, ...keep.stock, ...(keep.stock?.fit !== false ? { width: fresh.stock.width, depth: fresh.stock.depth } : {}) }, groups: keep.groups || {}, shapes: keep.shapes || {} } : fresh;
@@ -1026,7 +1037,7 @@ export function mountApp(root, host, engine) {
           o.cut = t.value;
           // Through for the profiles; a depth for clearing and lines
           o.depth = t.value === 'pocket' || t.value === 'online' ? (o.depth ?? S.job.depths[t.value]) : (t.value === 'off' ? o.depth : null);
-        } else if (t.dataset.through !== undefined) o.depth = t.checked ? null : Math.min(S.job.depths[o.cut] || S.job.depths.pocket, (S.job.stock.thickness || 6) - 0.5);
+        } else if (t.dataset.through !== undefined) o.depth = t.checked ? null : Math.max(0.1, Math.min(S.job.depths[o.cut] || S.job.depths.pocket, (S.job.stock.thickness || 6) - 0.5));
         else {
           const v = parseFloat(String(t.value).replace(',', '.'));
           if (Number.isFinite(v) && v > 0) o.depth = N.units.toMm(v, S.units);
