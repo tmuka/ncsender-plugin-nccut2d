@@ -6,6 +6,7 @@ import { Viewer, OP_COLORS, STOCK_COLORS } from './viewer.js';
 import * as store from './store.js';
 import { readSvg } from './svg.js';
 import { loadPdfjs } from './pdfjs.js';
+import { wireUnitFields, textToMm, formatMm } from 'ncsender-unit-input';
 
 const STEPS = ['Drawing', 'Stock & Zero', 'Operations', 'Preview & Load'];
 
@@ -69,6 +70,11 @@ export function mountApp(root, host, engine) {
   // Sizes in the user's units (ncSender's Units setting); mm inside
   const n = (v, d) => N.units.num(v, S.units, d);
   const L = (v, d) => N.units.len(v, S.units, d);
+  // Length fields take any unit (1/4", 6mm, 1in+4mm: ncsender-unit-input,
+  // as QuickCut): shown and read in the machine's units, kept in mm
+  const imperial = () => S.units === 'in';
+  const fmt = (mm) => formatMm(mm, imperial());
+  const mmOf = (t) => { const v = textToMm(String(t.value).replace(/^(\d+),(\d+)$/, '$1.$2'), imperial()); return v != null && Number.isFinite(v) && v > 0 ? v : null; };
   let planSeq = 0;
 
   // ---------- startup ----------
@@ -429,7 +435,7 @@ export function mountApp(root, host, engine) {
     const opts = cutsFor(closed).map((x) => `<option value="${x}" ${c.cut === x ? 'selected' : ''}>${esc(N.CUT_NAMES[x])}</option>`).join('');
     const through = c.depth === null || c.depth === undefined;
     const depthIn = c.cut === 'off' ? '' : `<label class="ncc-chk"><input type="checkbox" data-through="${esc(k)}" ${through ? 'checked' : ''}> Through</label>
-      ${through ? '' : `<input class="ncc-input ncc-mono ncc-depth" inputmode="decimal" aria-label="Depth (${S.units})" data-depth="${esc(k)}" value="${S.units === 'in' ? Math.round(c.depth / N.units.INCH * 1000) / 1000 : Math.round(c.depth * 100) / 100}"><span class="ncc-unit">${S.units} deep</span>`}`;
+      ${through ? '' : `<input class="ncc-input ncc-mono ncc-depth" type="text" data-unit="length" data-min="0" autocomplete="off" spellcheck="false" aria-label="Depth (${S.units})" data-depth="${esc(k)}" value="${fmt(c.depth)}"><span class="ncc-unit">${S.units} deep</span>`}`;
     return `<div class="ncc-choose"><select class="ncc-select" data-cut="${esc(k)}" aria-label="Cut">${opts}</select>${depthIn}</div>`;
   }
 
@@ -462,10 +468,10 @@ export function mountApp(root, host, engine) {
   // The stock's thickness: no guess; nothing is planned until it's given
   function thicknessCard() {
     const t = S.job.stock.thickness;
-    const v = t ? (S.units === 'in' ? Math.round(t / N.units.INCH * 1000) / 1000 : Math.round(t * 100) / 100) : '';
+    const v = t ? fmt(t) : '';
     return `<div class="ncc-card ${t ? '' : 'ncc-need'}">
         <div class="ncc-row"><div class="ncc-row-text"><div class="ncc-row-title">Stock thickness</div><div class="ncc-row-sub">${t ? '“Through” cuts go this deep and a little into the spoilboard.' : 'How thick is the board? Measure it: every “through” cut depends on it.'}</div></div>
-        <div style="display: flex; align-items: center; gap: 6px"><input class="ncc-input ncc-mono ncc-depth" inputmode="decimal" aria-label="Stock thickness (${S.units})" data-thick value="${v}" placeholder="?"><span class="ncc-unit">${S.units}</span></div></div>
+        <div style="display: flex; align-items: center; gap: 6px"><input class="ncc-input ncc-mono ncc-depth" type="text" data-unit="length" data-min="0" autocomplete="off" spellcheck="false" aria-label="Stock thickness (${S.units})" data-thick value="${v}" placeholder="?"><span class="ncc-unit">${S.units}</span></div></div>
       </div>`;
   }
 
@@ -475,7 +481,7 @@ export function mountApp(root, host, engine) {
     const unitless = S.info?.units == null || S.info?.units === 'unitless';
     const pct = Math.round(S.scale * 10000) / 100;
     return `<div class="ncc-card">
-        <div class="ncc-fields">${['X', 'Y'].map((ax, k) => `<div class="ncc-field"><label for="ncc-size${k}">${ax} (${S.units})</label><input id="ncc-size${k}" class="ncc-input ncc-mono" inputmode="decimal" data-size="${k}" value="${S.units === 'in' ? Math.round(a.size[k] / N.units.INCH * 1000) / 1000 : Math.round(a.size[k] * 100) / 100}"></div>`).join('')}</div>
+        <div class="ncc-fields">${['X', 'Y'].map((ax, k) => `<div class="ncc-field"><label for="ncc-size${k}">${ax} (${S.units})</label><input id="ncc-size${k}" class="ncc-input ncc-mono" type="text" data-unit="length" data-min="0" autocomplete="off" spellcheck="false" data-size="${k}" value="${fmt(a.size[k])}"></div>`).join('')}</div>
         <div class="ncc-row-sub">${pct === 100 ? 'As drawn' : `Scaled to ${pct}%`}${S.info?.units ? ` · the file says ${esc(S.info.units)}` : ''}.${pct !== 100 ? ' <button type="button" class="ncc-link" data-scale="reset">Back to the drawing’s size</button>' : ''}</div>
         ${unitless && pct === 100 && Math.max(raw.w, raw.h) < 50 ? `<div class="ncc-hint">${ICONS.info}<span>Only ${n(Math.max(raw.w, raw.h))} across and the file has no unit: it may be in inches. <button type="button" class="ncc-link" data-scale="inch">Make it inches (× 25.4)</button></span></div>` : ''}
         ${S.info?.notes ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.info.notes)}</span></div>` : ''}
@@ -494,7 +500,7 @@ export function mountApp(root, host, engine) {
   function stepStock() {
     const j = S.job, st = S.plan?.stock || N.stockBox(S.a, j);
     const mats = Object.entries(N.MATERIALS).map(([k, m]) => `<button class="ncc-pick ncc-mat ${j.material === k ? 'sel' : ''}" type="button" data-material="${k}"><span class="ncc-mat-swatch" style="background: ${STOCK_COLORS[k]}"></span>${esc(m.name)}<small>${esc(m.note)}</small></button>`).join('');
-    const field = (key, label, value) => `<div class="ncc-field"><label for="ncc-${key}">${label}</label><input id="ncc-${key}" class="ncc-input ncc-mono" inputmode="decimal" data-stock="${key}" value="${S.units === 'in' ? Math.round(value / N.units.INCH * 1000) / 1000 : Math.round(value * 100) / 100}" ${j.stock.fit && key !== 'thickness' ? 'disabled' : ''}></div>`;
+    const field = (key, label, value) => `<div class="ncc-field"><label for="ncc-${key}">${label}</label><input id="ncc-${key}" class="ncc-input ncc-mono" type="text" data-unit="length" data-min="0" autocomplete="off" spellcheck="false" data-stock="${key}" value="${fmt(value)}" ${j.stock.fit && key !== 'thickness' ? 'disabled' : ''}></div>`;
     // Two even columns: what the stock is on the left, where zero is on the right
     return `
       <div class="ncc-col ncc-half">
@@ -1004,20 +1010,22 @@ export function mountApp(root, host, engine) {
 
   root.addEventListener('change', (e) => {
     const t = e.target;
+    // Committed: leaving the field now doesn't commit it again
+    if (t.matches('input[data-unit]')) t.defaultValue = t.value;
     if (t.matches('[data-file]')) return openFile(t.files[0]);
     if (t.matches('[data-recent]')) return t.value && openRecent(t.value);
     if (t.dataset.tool) { S.job.toolOverride[t.dataset.tool] = +t.value || t.value; return changed(); }
     if (t.dataset.size) {
-      const k = +t.dataset.size, v = parseFloat(String(t.value).replace(',', '.'));
-      if (!(Number.isFinite(v) && v > 0 && S.a?.size[k] > 0)) return render();
-      const f = N.units.toMm(v, S.units) / S.a.size[k];
+      const k = +t.dataset.size, v = mmOf(t);
+      if (!(v && S.a?.size[k] > 0)) return render();
+      const f = v / S.a.size[k];
       if (Math.abs(f - 1) < 1e-9) return render();
       return rescale(S.scale * f);
     }
     // The stock's thickness (step 1 and Stock & Zero)
     if (t.matches('[data-thick]')) {
-      const v = parseFloat(String(t.value).replace(',', '.'));
-      if (Number.isFinite(v) && v > 0) S.job.stock.thickness = N.units.toMm(v, S.units);
+      const v = mmOf(t);
+      if (v) S.job.stock.thickness = v;
       return changed();
     }
     // A cut or depth for a group (its key) or the selection ('sel')
@@ -1039,18 +1047,27 @@ export function mountApp(root, host, engine) {
           o.depth = t.value === 'pocket' || t.value === 'online' ? (o.depth ?? S.job.depths[t.value]) : (t.value === 'off' ? o.depth : null);
         } else if (t.dataset.through !== undefined) o.depth = t.checked ? null : Math.max(0.1, Math.min(S.job.depths[o.cut] || S.job.depths.pocket, (S.job.stock.thickness || 6) - 0.5));
         else {
-          const v = parseFloat(String(t.value).replace(',', '.'));
-          if (Number.isFinite(v) && v > 0) o.depth = N.units.toMm(v, S.units);
+          const v = mmOf(t);
+          if (v) o.depth = v;
         }
       }
       return changed();
     }
     if (t.dataset.stock) {
-      const v = parseFloat(String(t.value).replace(',', '.'));
-      if (Number.isFinite(v) && v > 0) S.job.stock[t.dataset.stock] = N.units.toMm(v, S.units);
+      const v = mmOf(t);
+      if (v) S.job.stock[t.dataset.stock] = v;
       return changed();
     }
   });
+
+  // Unit fields: typed units become the machine's on leaving or Enter, and
+  // arrow keys step. A stepped value commits on leaving or Enter (the
+  // browser's change event only follows typing). A change that was already
+  // committed redrew the dialog, so its old field isn't here any more.
+  wireUnitFields(root, { imperial });
+  const commitUnit = (t) => { if (t?.isConnected && t.matches('input[data-unit]') && t.value !== t.defaultValue) t.dispatchEvent(new Event('change', { bubbles: true })); };
+  root.addEventListener('focusout', (e) => commitUnit(e.target));
+  root.addEventListener('keydown', (e) => { if (e.key === 'Enter') commitUnit(e.target); });
 
   root.addEventListener('dragover', (e) => { const z = e.target.closest('[data-drop]'); if (z) { e.preventDefault(); z.classList.add('over'); } });
   root.addEventListener('dragleave', (e) => { const z = e.target.closest('[data-drop]'); if (z) z.classList.remove('over'); });
