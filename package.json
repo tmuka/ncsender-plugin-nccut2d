@@ -14,7 +14,7 @@
     "clipper-lib": "^6.4.2",
     "dxf-parser": "^1.1.2",
     "esbuild": "^0.28.2",
-    "ncsender-unit-input": "file:../ncsender-unit-input",
+    "ncsender-unit-input": "github:tmuka/ncsender-unit-input#v0.1.0",
     "pdfjs-dist": "^4.10.38",
     "playwright-core": "^1.64.1",
     "three": "^0.186.1"
