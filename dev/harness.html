@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>ncCAM harness</title>
+<title>ncCut2D harness</title>
 <style>
   /* ncSender's dark theme values */
   :root { --color-accent: #1abc9c; --color-bg: #111720; --color-surface: #1a222e; --color-surface-muted: #202a38;
@@ -18,11 +18,11 @@
 </head>
 <body>
 <div class="harness-bar"><button onclick="document.documentElement.classList.toggle('light')">Theme</button><button onclick="openDialog()">Open</button></div>
-<div class="plugin-dialog-backdrop" id="bd"><div class="plugin-dialog"><div class="plugin-dialog-header"><h3>ncCAM</h3></div><div class="plugin-dialog-content" id="content"></div></div></div>
+<div class="plugin-dialog-backdrop" id="bd"><div class="plugin-dialog"><div class="plugin-dialog-header"><h3>ncCut2D</h3></div><div class="plugin-dialog-content" id="content"></div></div></div>
 <script>
   window.ncSender = { getApiBaseUrl: () => '' };
   async function openDialog() {
-    const { configUI } = await (await fetch('/api/plugins/com.ncsender.nccam/config-ui')).json();
+    const { configUI } = await (await fetch('/api/plugins/com.tmuka.nccut2d/config-ui')).json();
     const c = document.getElementById('content');
     document.getElementById('bd').style.display = 'flex';
     c.innerHTML = configUI;

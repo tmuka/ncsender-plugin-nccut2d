@@ -1,4 +1,4 @@
-// Bundles src/ into lib/nccam.js and copies the STEP reader's wasm.
+// Bundles src/ into lib/nccut2d.js and copies pdf.js (loaded only for PDF/AI).
 // node build.mjs
 import { build } from 'esbuild';
 import { copyFileSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -16,15 +16,15 @@ await build({
   legalComments: 'eof',
   external: ['fs', 'path', 'crypto', 'url', 'ws'],
   define: { __BUILD__: JSON.stringify(tag) },
-  outfile: 'lib/nccam.js',
+  outfile: 'lib/nccut2d.js',
 });
-const occt = 'node_modules/occt-import-js/dist';
-copyFileSync(`${occt}/occt-import-js.wasm`, 'lib/occt-import-js.wasm');
-copyFileSync(`${occt}/license.occt.txt`, 'lib/LICENSE-occt.txt');
-copyFileSync(`${occt}/license.occt-import-js.txt`, 'lib/LICENSE-occt-import-js.txt');
+const pdf = 'node_modules/pdfjs-dist';
+copyFileSync(`${pdf}/build/pdf.min.mjs`, 'lib/pdf.min.mjs');
+copyFileSync(`${pdf}/build/pdf.worker.min.mjs`, 'lib/pdf.worker.min.mjs');
+copyFileSync(`${pdf}/LICENSE`, 'lib/LICENSE-pdfjs.txt');
 
-// config.html loads lib/nccam.js again only when the build changes
+// config.html loads lib/nccut2d.js again only when the build changes
 const html = readFileSync('config.html', 'utf8').replace(/var BUILD = '[^']*';/, `var BUILD = '${tag}';`);
 writeFileSync('config.html', html);
-const size = readFileSync('lib/nccam.js').length;
-console.log(`lib/nccam.js ${(size / 1024).toFixed(0)} KB, build ${tag}, sha ${createHash('sha1').update(readFileSync('lib/nccam.js')).digest('hex').slice(0, 8)}`);
+const size = readFileSync('lib/nccut2d.js').length;
+console.log(`lib/nccut2d.js ${(size / 1024).toFixed(0)} KB, build ${tag}, sha ${createHash('sha1').update(readFileSync('lib/nccut2d.js')).digest('hex').slice(0, 8)}`);

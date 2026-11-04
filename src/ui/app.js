@@ -1,18 +1,19 @@
-// The ncCAM wizard: Model, Stock & Zero, Operations, Preview & Load.
+// The ncCut2D wizard: Drawing (what to cut), Stock & Zero, Operations,
+// Preview & Load. Steps 2-4 are ncCAM's.
 import { Color } from 'three';
 import * as N from '../core/index.js';
 import { Viewer, OP_COLORS, STOCK_COLORS } from './viewer.js';
 import * as store from './store.js';
+import { readSvg } from './svg.js';
+import { loadPdfjs } from './pdfjs.js';
 
-const STEPS = ['Model', 'Stock & Zero', 'Operations', 'Preview & Load'];
-const SIDES = [['top', 'Top'], ['bottom', 'Bottom'], ['front', 'Front'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right']];
+const STEPS = ['Drawing', 'Stock & Zero', 'Operations', 'Preview & Load'];
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const clock = (sec) => { const s = Math.max(0, Math.round(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 
 const svg = (body, size = 18, extra = '') => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${body}</svg>`;
 // Chamfer width: default and range, in mm
-const CHAMFER = { size: 1, min: 0.5, max: 6, step: 0.5 };
 
 const ICONS = {
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
@@ -40,14 +41,6 @@ const ICONS = {
   rest3d: svg('<path d="M3 19h4v-4h3v-4h4v4h3v4h4"/><circle cx="12" cy="17" r="1.5"/>'),
 };
 
-const SIDE_ICONS = {
-  top: '<path d="M12 3l9 5-9 5-9-5z" fill="currentColor" fill-opacity=".35"/><path d="M3 8v8l9 5 9-5V8"/>',
-  bottom: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M3 16l9-5 9 5" stroke-dasharray="2 2"/>',
-  front: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 8v8l9 5V13z" fill="currentColor" fill-opacity=".35"/><path d="M21 8v8l-9 5"/>',
-  back: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 3v8" stroke-dasharray="2 2"/>',
-  left: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 8v8l9 5V13z" fill="currentColor" fill-opacity=".2"/><path d="M21 8v8l-9 5"/>',
-  right: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 8v8l9 5"/><path d="M21 8v8l-9 5V13z" fill="currentColor" fill-opacity=".35"/>',
-};
 
 export function mountApp(root, host, engine) {
   const api = {
@@ -66,6 +59,9 @@ export function mountApp(root, host, engine) {
     job: null, plan: null, planning: false, result: null, simChecks: null,
     toast: '',
     recent: [], partKey: null,
+    // The drawing: as read (raw), at S.scale (a: analyze2d), its decision
+    // groups, the shapes selected
+    raw: null, a: null, groups: [], sel: new Set(), info: null,
   };
   const viewer = new Viewer();
   // A slot past the magazine is still a change by hand
@@ -100,18 +96,20 @@ export function mountApp(root, host, engine) {
     S.connected = !!state?.machineState?.connected;
     render();
     S.recent = await store.recent();
-    if (S.recent.length && !S.part && !S.loading) openRecent(S.recent[0].key);
+    if (S.recent.length && !S.a && !S.loading) openRecent(S.recent[0].key);
   })();
 
   // ---------- engine calls ----------
-  // last: the saved part to open again ({ name, bytes, upPath, job })
+  // last: the saved drawing to open again ({ name, bytes, job, scale })
   // Each open supersedes the one before: an older one stops at its next step
   let loadSeq = 0;
+  const DRAWING = /\.(dxf|svg|pdf|ai)$/i;
   async function openFile(file, last = null) {
     if (!file && !last) return;
     const seq = ++loadSeq, gone = () => seq !== loadSeq;
     const name = last ? last.name : file.name;
-    S.fileName = name; S.loading = `Reading ${name}…`; S.error = ''; S.plan = null; S.result = null; S.analysis = null; S.part = null;
+    if (!DRAWING.test(name)) { S.error = /\.(step|stp|stl|3mf)$/i.test(name) ? 'That’s a 3D part: open it in ncCAM. ncCut2D reads drawings: DXF, SVG, PDF or AI.' : 'Open a DXF, SVG, PDF or AI drawing.'; render(); return; }
+    S.fileName = name; S.loading = `Reading ${name}…`; S.error = ''; S.plan = null; S.result = null; S.a = null; S.part = null; S.sel = new Set();
     S.step = 1; S.maxStep = 1;
     render();
     try {
@@ -124,104 +122,61 @@ export function mountApp(root, host, engine) {
         if (gone()) return;
         if (kept?.bytes && sameBytes(kept.bytes, bytes)) last = { ...kept, bytes };
       }
-      S.bytes = bytes.slice(0); S.partKey = key;
-      S.lock = last?.lock ?? true;
-      const info = await engine('load', { bytes, name, scale: last?.scale }, [bytes]);
+      const ext = name.split('.').pop().toLowerCase();
+      let r;
+      if (ext === 'dxf') r = N.readDxf(new TextDecoder().decode(bytes));
+      else if (ext === 'svg') r = readSvg(new TextDecoder().decode(bytes));
+      else r = await N.readPdf(new Uint8Array(bytes.slice(0)), await loadPdfjs(host));
       if (gone()) return;
-      S.sides = info.sides; S.fileSize = info.fileSize; S.meshKind = info.mesh || null; S.scale = info.scale;
-      if (last?.upPath?.length) {
-        S.job = null;
-        for (const up of last.upPath) { await orient(up, true); if (gone()) return; }
-        S.job = { ...N.defaultJob(S.analysis), ...last.job };
-        await replan();
-      } else {
-        await orient(info.best);
-      }
+      // Loose lines that meet become closed shapes
+      const joined = N.joinPaths(r.shapes);
+      if (!joined.shapes.length) throw new Error('No lines or shapes were found in this drawing. Text must be converted to curves (outlines) first.');
+      const skipped = Object.entries(r.skipped || {}).filter(([, v]) => v > 0).map(([k, v]) => `${v} ${k}`);
+      S.info = { units: r.units, notes: skipped.length ? `Not drawn: ${skipped.join(', ')} (convert text and hatches to curves to cut them).` : '' };
+      S.raw = joined.shapes;
+      S.bytes = bytes.slice(0); S.partKey = key;
+      S.scale = last?.scale || 1;
+      await sized(last?.job);
       if (gone()) return;
       remember();
     } catch (e) {
       if (gone()) return;
       S.error = e.message || String(e);
-      S.fileName = '';
+      S.fileName = ''; S.a = null;
     }
     S.loading = '';
     render();
   }
 
-  // A new size, the part kept as it sits and the job kept. by: [x, y, z]
-  // along the machine's axes; scale: a whole size in the file's axes
+  // The drawing at S.scale: analysed here (to draw and choose) and in the
+  // engine (to plan). keep: a job to keep (reopened, or resized)
+  async function sized(keep) {
+    const shapes = S.scale === 1 ? S.raw : N.transformShapes(S.raw, [S.scale, 0, 0, S.scale, 0, 0]);
+    S.a = N.analyze2d(shapes);
+    S.groups = N.groups2d(S.a);
+    await engine('load', { shapes });
+    const fresh = N.defaultJob(S.a, null);
+    S.job = keep ? { ...fresh, ...keep, stock: { ...fresh.stock, ...keep.stock, ...(keep.stock?.fit !== false ? { width: fresh.stock.width, depth: fresh.stock.depth } : {}) }, groups: keep.groups || {}, shapes: keep.shapes || {} } : fresh;
+    // Shapes are numbered as read: a saved per-shape choice past the end is stale
+    for (const i of Object.keys(S.job.shapes)) if (+i >= S.a.shapes.length) delete S.job.shapes[i];
+    S.sel = new Set([...S.sel].filter((i) => i < S.a.shapes.length));
+    await replan();
+  }
+
   let sizing = Promise.resolve();
-  function rescale(change) {
+  function rescale(scale) {
     sizing = sizing.then(async () => {
-      S.loading = 'Resizing the part\u2026'; render();
-      try {
-        const r = await engine('rescale', change);
-        S.sides = r.sides; S.scale = r.scale; S.rot = r.rot;
-        S.part = { positions: r.positions, indices: r.indices };
-        S.analysis = r.analysis;
-        // A clicked face's direction changes with an uneven resize: keep how
-        // the part sits now instead of the clicks that got it there
-        if ((S.upPath || []).some((u) => Array.isArray(u) || u?.rot)) S.upPath = [{ rot: r.rot }];
-        const keep = S.job;
-        S.job = { ...N.defaultJob(S.analysis), ...keep, stock: keep.stock.fit ? N.defaultJob(S.analysis).stock : keep.stock };
-        S.result = null; S.maxStep = Math.min(S.maxStep, 3);
-        await replan();
-        remember();
-      } catch (e) { S.error = e.message || String(e); }
+      S.loading = 'Resizing the drawing…'; render();
+      try { S.scale = scale; S.result = null; S.maxStep = Math.min(S.maxStep, 3); await sized(S.job); remember(); } catch (e) { S.error = e.message || String(e); }
       S.loading = '';
       render();
     });
     return sizing;
   }
 
-  // How the part was turned: a side, then any clicked faces or turns from
-  // the axis arrows ({ turn: 'around' | 'over' }), replayed on reopen.
-  // `quiet` skips the busy overlay (the arrows animate instead).
-  const OPPOSITE = { top: 'bottom', bottom: 'top', front: 'back', back: 'front', left: 'right', right: 'left' };
-  async function orient(up, replaying = false, quiet = false) {
-    if (!quiet) { S.loading = 'Turning the part…'; render(); }
-    const turn = up && !Array.isArray(up) && typeof up === 'object' && !up.rot;
-    const r = await (turn ? engine('turn', { how: up.turn }) : engine(Array.isArray(up) ? 'tilt' : 'orient', Array.isArray(up) ? { normal: up } : { up }));
-    return applyTurn(up, r, replaying);
-  }
-
-  function applyTurn(up, r, replaying) {
-    const turn = up && !Array.isArray(up) && typeof up === 'object' && !up.rot;
-    S.rot = r.rot;
-    if (turn) S.up = up.turn === 'over' ? (OPPOSITE[S.up] || 'custom') : S.up;
-    else if (up?.rot) S.up = S.up || 'custom';
-    else S.up = Array.isArray(up) ? 'custom' : up;
-    S.upPath = turn || Array.isArray(up) ? [...(S.upPath || []), up] : [up];
-    if (replaying) { S.part = { positions: r.positions, indices: r.indices }; S.analysis = r.analysis; S.loading = ''; return; }
-    S.part = { positions: r.positions, indices: r.indices };
-    S.analysis = r.analysis;
-    const keep = S.job;
-    S.job = N.defaultJob(r.analysis);
-    if (keep) Object.assign(S.job, { material: keep.material, finish: keep.finish, zero: keep.zero, tabs: keep.tabs, chamfer: keep.chamfer, stock: { ...S.job.stock, fit: keep.stock.fit, margin: keep.stock.margin, extraTop: keep.stock.extraTop } });
-    S.loading = '';
-    return replan();
-  }
-
-  // An axis arrow on Where is zero: X or Y turns the part half a turn on the
-  // table, Z turns it over. The part spins in the view while the engine
-  // turns it, and the turned part replaces it once the spin ends.
-  let turning = false;
-  async function turnPart(axis) {
-    if (turning || !S.part) return;
-    turning = true;
-    const up = { turn: axis === 'z' ? 'over' : 'around' };
-    try {
-      const [r] = await Promise.all([engine('turn', { how: up.turn }), viewer.spin(axis === 'z' ? 'x' : 'z')]);
-      await applyTurn(up, r, false);
-    } catch (e) {
-      S.error = e.message || String(e);
-      render();
-    }
-    turning = false;
-  }
-
   async function replan(paths = false) {
-    if (!S.part) return;
+    // Nothing is planned until the stock's thickness is given
+    if (!S.a || !(S.job?.stock.thickness > 0)) { S.plan = null; S.part = null; render(); return; }
     const seq = ++planSeq;
     S.planning = true;
     if (paths) S.result = null;
@@ -237,6 +192,7 @@ export function mountApp(root, host, engine) {
       // How long this took here: a small computer gets a note when it's slow
       S.slow = slowNote(performance.now() - started, paths) ?? (paths ? null : S.slow);
       S.plan = r.plan;
+      S.part = r.part;
       remember();
       if (paths) { S.result = r; S.simChecks = null; }
     } catch (e) {
@@ -256,14 +212,14 @@ export function mountApp(root, host, engine) {
   };
   function slowNote(ms, paths) {
     if (!smallHere() || ms < (paths ? SLOW.paths : SLOW.plan)) return null;
-    return `${paths ? 'Making the toolpaths' : 'Planning'} took ${Math.round(ms / 1000)} s on this small computer. ncCAM runs in the browser that shows it: open ncSender in a browser on a laptop or desktop (this machine's address, port 8090) and it works there, usually several times faster. Programs still save to this machine.`;
+    return `${paths ? 'Making the toolpaths' : 'Planning'} took ${Math.round(ms / 1000)} s on this small computer. ncCut2D runs in the browser that shows it: open ncSender in a browser on a laptop or desktop (this machine's address, port 8090) and it works there, usually several times faster. Programs still save to this machine.`;
   }
 
   // Busy: a spinner, the seconds so far (quietly), and on a small computer,
   // after a few seconds, where it would be faster
   function busyBox(label, style = '') {
     return `<div class="ncc-busy" ${style ? `style="${style}"` : ''}><div class="ncc-busy-in"><div class="ncc-busy-row"><span class="ncc-spin"></span>${esc(label)}<span class="ncc-elapsed" data-elapsed></span></div>
-      <div class="ncc-busy-tip" data-slowtip hidden>Slow for your parts? Open ncSender in a browser on a laptop or desktop (this machine's address, port 8090): ncCAM works there, usually several times faster.</div></div></div>`;
+      <div class="ncc-busy-tip" data-slowtip hidden>Slow for your parts? Open ncSender in a browser on a laptop or desktop (this machine's address, port 8090): ncCut2D works there, usually several times faster.</div></div></div>`;
   }
   let busyStart = null;
   const ticker = setInterval(() => {
@@ -282,7 +238,7 @@ export function mountApp(root, host, engine) {
   function remember() {
     if (!S.bytes || !S.job) return;
     clearTimeout(saveTimer);
-    const record = { name: S.fileName, bytes: S.bytes, upPath: S.upPath, job: S.job, scale: S.scale, lock: S.lock, savedAt: Date.now() };
+    const record = { name: S.fileName, bytes: S.bytes, job: S.job, scale: S.scale, savedAt: Date.now() };
     const key = S.partKey, first = S.recent[0]?.key !== key;
     saveTimer = setTimeout(async () => {
       S.recent = await store.keep(record, S.recent, key);
@@ -293,7 +249,7 @@ export function mountApp(root, host, engine) {
     const kept = await store.load(`part:${key}`);
     if (kept?.bytes) return openFile(null, kept);
     S.recent = await store.forget(key, S.recent);
-    S.error = 'That part is no longer kept in this browser.';
+    S.error = 'That drawing is no longer kept in this browser.';
     render();
   }
   function sameBytes(a, b) {
@@ -322,15 +278,15 @@ export function mountApp(root, host, engine) {
     const keepTop = scrolled ? scrolled.scrollTop : 0;
     const step = S.step;
     const lede = [
-      'Drop a STEP, STL or 3MF file. ncCAM finds the pockets, holes and outline for you.',
+      S.a ? 'Give the stock’s thickness, then choose how each kind of shape is cut and how deep.' : 'Drop a drawing. ncCut2D groups alike shapes so you choose each kind once.',
       'Pick the material. ncCAM sets the speeds, feeds and depth of each pass.',
       'Tools are picked from your Tool Library. Change any of them, or just continue.',
       'Watch the cut play through. When it looks right, load it.',
     ][step - 1];
-    const title = [S.part ? 'Your part' : 'Open your part', 'What are you cutting it from?', 'Here’s the plan', S.simChecks && !S.simChecks.ok ? 'Check the warnings' : 'Ready to cut'][step - 1];
+    const title = [S.a ? 'What to cut' : 'Open your drawing', 'What are you cutting it from?', 'Here’s the plan', S.simChecks && !S.simChecks.ok ? 'Check the warnings' : 'Ready to cut'][step - 1];
     root.innerHTML = `
       <nav class="ncc-rail" aria-label="Steps">
-        <div class="ncc-rail-head"><div class="ncc-eyebrow">Plugin</div><div class="ncc-rail-title">ncCAM<span class="ncc-beta">Beta</span></div><div class="ncc-rail-sub">STEP, STL or 3MF to G-code</div></div>
+        <div class="ncc-rail-head"><div class="ncc-eyebrow">Plugin</div><div class="ncc-rail-title">ncCut2D<span class="ncc-beta">Beta</span></div><div class="ncc-rail-sub">DXF, SVG, PDF or AI to G-code</div></div>
         <div class="ncc-steps">${STEPS.map((name, i) => {
           const n = i + 1, cls = n === step ? 'on' : n < S.maxStep || (n < step) ? 'done' : '';
           return `<button class="ncc-step ${cls}" type="button" data-go="${n}" ${n <= S.maxStep ? '' : 'disabled'}><span class="ncc-num">${cls === 'done' ? '✓' : n}</span>${esc(name)}</button>`;
@@ -342,7 +298,7 @@ export function mountApp(root, host, engine) {
           <div><h1>${esc(title)}</h1><p class="ncc-lede">${esc(lede)}</p></div>
           <div class="ncc-conn"><span class="ncc-dot ${S.connected ? 'ok' : ''}"></span>${S.connected ? 'Connected' : 'Not connected'}</div>
         </div>
-        <div class="ncc-body ${step === 3 ? 'fixed' : ''}">${[stepModel, stepStock, stepOps, stepPreview][step - 1]()}</div>
+        <div class="ncc-body ${step === 3 ? 'fixed' : ''}">${[stepDrawing, stepStock, stepOps, stepPreview][step - 1]()}</div>
         <div class="ncc-foot">${footer()}</div>
       </section>
       ${S.toast ? `<div class="ncc-toast" role="status">${esc(S.toast)}</div>` : ''}`;
@@ -353,9 +309,8 @@ export function mountApp(root, host, engine) {
       slot.replaceWith(viewer.el);
       const busy = S.loading || (step === 4 && !S.result) ? busyBox(S.loading || 'Making toolpaths…') : '';
       viewer.el.querySelectorAll('.ncc-busy, .ncc-overlay').forEach((e) => e.remove());
-      viewer.el.insertAdjacentHTML('beforeend', (step === 1 ? modelOverlay() : step === 4 ? previewOverlay() : '') + busy);
+      viewer.el.insertAdjacentHTML('beforeend', (step === 4 ? previewOverlay() : '') + busy);
       viewer.fit();
-      if (step === 1) showPartView();
       if (step === 2) showZeroView();
       if (step === 3) showOpsView();
       if (step === 4 && S.result) showPreview();
@@ -364,7 +319,10 @@ export function mountApp(root, host, engine) {
 
   function footer() {
     const back = `<button class="ncc-back" type="button" data-go="${S.step - 1}" ${S.step > 1 ? '' : 'disabled'}>Back</button>`;
-    if (S.step === 1) return `${back}<button class="ncc-next" type="button" data-go="2" ${S.plan && S.plan.ops.length && !S.loading ? '' : 'disabled'}>Next: Stock ${ICONS.next}</button>`;
+    if (S.step === 1) {
+      const why = !S.a ? '' : !(S.job?.stock.thickness > 0) ? 'Give the stock’s thickness first.' : S.plan && !S.plan.ops.length ? 'Nothing is set to be cut.' : '';
+      return `${back}${why ? `<span class="ncc-foot-note">${why}</span>` : ''}<button class="ncc-next" type="button" data-go="2" ${S.plan && S.plan.ops.length && !S.loading && !S.planning ? '' : 'disabled'}>Next: Stock ${ICONS.next}</button>`;
+    }
     if (S.step === 2) return `${back}<button class="ncc-next" type="button" data-go="3">Next: Operations ${ICONS.next}</button>`;
     if (S.step === 3) {
       const any = S.plan && S.plan.ops.some((o) => o.enabled);
@@ -375,154 +333,163 @@ export function mountApp(root, host, engine) {
   }
 
   // ---------- step 1 ----------
-  function stepModel() {
-    if (!S.part && !S.loading) {
+  // The drawing flat, each shape in its cut's colour; the decisions beside it
+  const CUT_COLORS = { outside: OP_COLORS.cutout, inside: OP_COLORS.inside, pocket: OP_COLORS.pocket, online: OP_COLORS.online, off: '#8a94a3' };
+  const ACCEPT = '.dxf,.svg,.pdf,.ai,.DXF,.SVG,.PDF,.AI';
+  function stepDrawing() {
+    if (!S.a && !S.loading) {
       return `<div class="ncc-drop" data-drop>
         <div class="ncc-drop-icon">${ICONS.upload}</div>
-        <h2>Drop a STEP, STL or 3MF file here</h2>
-        <p>Export your part from Fusion, Onshape, FreeCAD or SolidWorks as <strong>.step</strong>, or open a mesh: <strong>.stl</strong> or <strong>.3mf</strong> (from a 3D printing site or slicer). Millimetres or inches both work.</p>
-        <label class="ncc-btn" style="display: inline-flex; align-items: center; gap: 8px">Open file<input type="file" accept=".step,.stp,.stl,.3mf,.STEP,.STP,.STL,.3MF" data-file hidden></label>
+        <h2>Drop a DXF, SVG, PDF or AI file here</h2>
+        <p>A drawing to size, from Fusion, Inkscape, Illustrator, LibreCAD or QCAD. Each shape gets a cut: <strong>Outer (part)</strong>, <strong>Inner (perimeter)</strong>, <strong>Inner (clearing)</strong> or <strong>On the line</strong>.</p>
+        <label class="ncc-btn" style="display: inline-flex; align-items: center; gap: 8px">Open file<input type="file" accept="${ACCEPT}" data-file hidden></label>
         ${S.error ? `<div class="ncc-hint bad" style="max-width: 520px">${ICONS.warn}<span>${esc(S.error)}</span></div>` : ''}
-        ${recentList().length ? `<div class="ncc-recent"><div class="ncc-recent-h">Recent parts <span>kept in this browser</span></div>
+        ${recentList().length ? `<div class="ncc-recent"><div class="ncc-recent-h">Recent drawings <span>kept in this browser</span></div>
           ${recentList().map((r) => `<div class="ncc-recent-row"><button class="ncc-recent-open" type="button" data-recent-open="${esc(r.key)}"><span class="ncc-file-name">${esc(r.name)}</span><span class="ncc-file-sub">${when(r.savedAt)}</span></button><button class="ncc-recent-x" type="button" data-forget="${esc(r.key)}" aria-label="Forget ${esc(r.name)}" title="Forget">${ICONS.close}</button></div>`).join('')}</div>` : ''}
-        ${S.tools.length ? '' : `<div class="ncc-hint" style="max-width: 520px">${ICONS.info}<span>Your Tool Library is empty. Add your end mills in Settings → Tool Library so ncCAM can pick them.</span></div>`}
+        ${S.tools.length ? '' : `<div class="ncc-hint" style="max-width: 520px">${ICONS.info}<span>Your Tool Library is empty. Add your end mills in Settings → Tool Library so ncCut2D can pick them.</span></div>`}
       </div>`;
     }
-    const a = S.analysis;
+    const a = S.a;
     return `
       <div class="ncc-card ncc-viewcard ncc-grow">
         <div class="ncc-file">
           <div style="display: flex; align-items: center; gap: 12px; min-width: 0">
             <div class="ncc-drop-icon" style="width: 38px; height: 38px; border-radius: 10px">${ICONS.part}</div>
             <div style="min-width: 0"><div class="ncc-file-name">${esc(S.fileName)}</div>
-            <div class="ncc-file-sub ncc-mono">${a ? `${n(a.size[0])} × ${n(a.size[1])} × ${L(a.size[2])}` : '&nbsp;'}</div></div>
+            <div class="ncc-file-sub ncc-mono">${a ? `${n(a.size[0])} × ${L(a.size[1])} · ${a.shapes.length} shape${a.shapes.length === 1 ? '' : 's'}` : '&nbsp;'}</div></div>
           </div>
           <div style="display: flex; gap: 8px; align-items: center">
-          ${recentList().length ? `<select class="ncc-select ncc-recent-pick" data-recent aria-label="Recent parts" ${S.loading ? 'disabled' : ''}><option value="">Recent parts…</option>${recentList().map((r) => `<option value="${esc(r.key)}">${esc(r.name)} · ${when(r.savedAt)}</option>`).join('')}</select>` : ''}
-          <label class="ncc-btn muted" style="white-space: nowrap">Open another file<input type="file" accept=".step,.stp,.stl,.3mf,.STEP,.STP,.STL,.3MF" data-file hidden></label>
+          ${recentList().length ? `<select class="ncc-select ncc-recent-pick" data-recent aria-label="Recent drawings" ${S.loading ? 'disabled' : ''}><option value="">Recent drawings…</option>${recentList().map((r) => `<option value="${esc(r.key)}">${esc(r.name)} · ${when(r.savedAt)}</option>`).join('')}</select>` : ''}
+          <label class="ncc-btn muted" style="white-space: nowrap">Open another file<input type="file" accept="${ACCEPT}" data-file hidden></label>
           </div>
         </div>
-        <div data-viewer></div>
+        <div class="ncc-drawing" data-drawing>${a ? drawingSvg() : busyBox(S.loading || 'Reading…', 'position: static; flex: 1')}</div>
+        <div class="ncc-row-sub" style="margin: 0">Click a shape to choose its cut on its own; shift-click for more. ${legend()}</div>
       </div>
-      <div class="ncc-col ncc-side">
-        ${sizeCard()}
-        <div class="ncc-card">
-          <div class="ncc-label">Which side faces up?</div>
-          <div class="ncc-picks">${SIDES.map(([k, label]) => {
-            const ok = !S.sides || S.sides[k].reachable;
-            return `<button class="ncc-pick ${S.up === k ? 'sel' : ''}" type="button" data-up="${k}" ${ok ? '' : 'disabled'} ${ok ? '' : `title="With the ${label.toLowerCase()} up, some faces point down and the tool can\u2019t reach them"`}>${svg(SIDE_ICONS[k], 24, 'stroke-width="1.8"')}${label}${ok ? '' : '<small>Can\u2019t reach</small>'}</button>`;
-          }).join('')}</div>
-          <div class="ncc-row-sub">Or click a flat face on the model to put it on top.</div>
-        </div>
-        ${foundCard()}
-        ${planHints(true)}
+      <div class="ncc-col ncc-side" data-keep-scroll="cuts">
+        ${a ? `${sizeCard()}${thicknessCard()}${selectionCard()}${decisionsCard()}${planHints(true)}` : ''}
       </div>`;
   }
 
-  // The part's size in the file's X, Y, Z: typed in, together or each alone
-  function sizeCard() {
-    if (!S.fileSize || !S.analysis) return '';
-    const val = (k) => { const v = S.analysis.size[k]; return S.units === 'in' ? Math.round((v / N.units.INCH) * 1000) / 1000 : Math.round(v * 100) / 100; };
-    // The resize along the machine's axes as the part sits now
-    const M = S.scale || [1, 0, 0, 0, 1, 0, 0, 0, 1], R = S.rot || [1, 0, 0, 0, 1, 0, 0, 0, 1];
-    const mul = (a, b) => Array.from({ length: 9 }, (_, k) => a[(k / 3 | 0) * 3] * b[k % 3] + a[(k / 3 | 0) * 3 + 1] * b[3 + k % 3] + a[(k / 3 | 0) * 3 + 2] * b[6 + k % 3]);
-    const K = mul(mul(R, M), [R[0], R[3], R[6], R[1], R[4], R[7], R[2], R[5], R[8]]);
-    const even = [1, 2, 3, 5, 6, 7].every((i) => Math.abs(K[i]) < 1e-6);
-    const pct = [K[0], K[4], K[8]].map((v) => `${Math.round(v * 1000) / 10}%`);
-    const same = even && Math.abs(K[0] - K[4]) < 1e-9 && Math.abs(K[0] - K[8]) < 1e-9;
-    const scaled = !(same && Math.abs(K[0] - 1) < 1e-9);
-    // An STL has no unit: a whole part under about 12 across was likely drawn in inches
-    const inches = S.meshKind === 'stl' && !scaled && Math.max(...S.fileSize) < 12;
-    return `<div class="ncc-card">
-        ${toggleRow('lock', 'Keep the proportions', !scaled ? 'As in the file' : same ? `Scaled to ${pct[0]}` : even ? `Scaled ${pct.join(' \u00d7 ')}` : 'Stretched', S.lock)}
-        <div class="ncc-fields">${['X', 'Y', 'Z'].map((a, k) => `<div class="ncc-field"><label for="ncc-size${k}">${a} (${S.units})</label><input id="ncc-size${k}" class="ncc-input ncc-mono" inputmode="decimal" data-size="${k}" value="${val(k)}"></div>`).join('')}</div>
-        <div class="ncc-row-sub">The part as it sits now, side up chosen: Z is its height.${scaled ? ' <button type="button" class="ncc-link" data-scale="reset">Back to the file\u2019s size</button>' : ''}</div>
-        ${inches ? `<div class="ncc-hint">${ICONS.info}<span>Only ${n(Math.max(...S.fileSize))} across: STL files have no unit, so this may have been drawn in inches. <button type="button" class="ncc-link" data-scale="inch">Make it inches (\u00d7 25.4)</button></span></div>` : ''}
-      </div>`;
+  const legend = () => ['outside', 'inside', 'pocket', 'online', 'off'].map((k) => `<span style="white-space: nowrap"><span class="ncc-swatch" style="background: ${CUT_COLORS[k]}"></span> ${esc(N.CUT_NAMES[k])}</span>`).join(' ');
+
+  // Every shape, its cut's colour; pockets filled, off dashed, selected bold
+  function drawingSvg() {
+    const a = S.a, [w, h] = a.size, pad = Math.max(w, h) * 0.03 + 1;
+    const gOf = N.groupOf(S.groups);
+    const order = a.shapes.map((_, i) => i).sort((i, j) => (a.areas[j] || 0) - (a.areas[i] || 0));
+    const stroke = Math.max(w, h) / 500;
+    const paths = order.map((i) => {
+      const s = a.shapes[i], c = N.choiceFor(a, S.job, i, gOf);
+      const d = s.pts.map((p, k) => `${k ? 'L' : 'M'}${p[0].toFixed(3)} ${(h - p[1]).toFixed(3)}`).join('') + (a.loops[i] ? 'Z' : '');
+      const col = CUT_COLORS[c.cut], sel = S.sel.has(i);
+      const fill = c.cut === 'pocket' && a.loops[i] ? `fill="${col}" fill-opacity="0.22"` : a.loops[i] ? 'fill="transparent"' : 'fill="none"';
+      return `<path d="${d}" data-shape="${i}" stroke="${sel ? 'var(--color-accent)' : col}" stroke-width="${(sel ? 3 : 1.4) * stroke}" ${c.cut === 'off' ? `stroke-dasharray="${4 * stroke} ${3 * stroke}"` : ''} ${fill} vector-effect="non-scaling-stroke" style="cursor: pointer"><title>${esc(shapeName(i))} · ${esc(N.CUT_NAMES[c.cut])}${depthText(c)}</title></path>`;
+    }).join('');
+    return `<svg viewBox="${-pad} ${-pad} ${w + 2 * pad} ${h + 2 * pad}" preserveAspectRatio="xMidYMid meet" style="width: 100%; height: 100%; display: block">${paths}</svg>`;
   }
 
-  function foundCard() {
-    if (!S.plan) return `<div class="ncc-card"><div class="ncc-label">Found in this part</div><div class="ncc-row-sub">${S.planning ? 'Looking…' : ''}</div></div>`;
-    // The same feature more than once is one line: "5 pockets, through"
-    const groups = new Map();
-    for (const o of S.plan.ops.filter((x) => x.kind !== 'face' && x.kind !== 'corners' && x.kind !== 'finish3d' && x.kind !== 'rest3d' && x.id !== 'chamfer' && !x.pilot)) {
-      const name = featureName(o);
-      const g = groups.get(name) || { o, name, n: 0 };
-      g.n += o.count || 1;
-      groups.set(name, g);
+  const depthText = (c) => (c.cut === 'off' ? '' : c.depth === null || c.depth === undefined ? ' · through' : ` · ${L(c.depth)} deep`);
+
+  function shapeName(i) {
+    const a = S.a, c = a.circles[i];
+    if (!a.loops[i]) return 'Line';
+    if (c) return `Ø${L(2 * c.r)} circle`;
+    const b = N.bounds([a.shapes[i]]);
+    return `${n(b.w)} × ${L(b.h)} shape`;
+  }
+
+  function groupName(g) {
+    const k = g.idx.length, many = k > 1 ? `${k} × ` : '';
+    if (g.kind === 'outline') return k > 1 ? `Outline (${k} shapes joined)` : 'Outline';
+    if (g.kind === 'line') return k > 1 ? `${k} lines` : 'A line';
+    if (g.kind === 'counterbore') {
+      const { sizes, step, last } = g.label;
+      return `${many}Ø${L(sizes[step])} ${last ? 'hole through the' : step ? 'inner step of the' : 'outer step of the'} counterbore${k > 1 ? 's' : ''} (${sizes.map((d) => n(d)).join(' / ')})`;
     }
-    const label = (g) => (g.n < 2 ? g.name : g.name.replace(/^(Pocket|Step), /, (_, w) => `${g.n} ${w.toLowerCase()}s, `));
-    return `<div class="ncc-card"><div class="ncc-label">Found in this part</div><div class="ncc-found">${[...groups.values()].map((g) =>
-      `<div class="ncc-row"><span style="display: flex; align-items: center; gap: 8px"><span class="ncc-swatch" style="background: ${OP_COLORS[g.o.kind]}"></span>${esc(label(g))}</span><span class="ncc-ok">✓</span></div>`).join('') || '<div class="ncc-row-sub">Nothing to cut from this side.</div>'}</div></div>`;
+    if (g.kind === 'circle') return `${many}Ø${L(g.label.d)} circle${k > 1 ? 's' : ''}`;
+    return `${many}${n(g.label.w)} × ${L(g.label.h)} ${g.kind === 'rect' ? 'rectangle' : 'shape'}${k > 1 ? 's' : ''}`;
   }
 
-  function featureName(o) {
-    const d = o.detail.replace(/ · (spiral|from the pilot)$/, '');
-    if (o.kind === 'cutout') return `Outline, ${L(o.zTop)} cut-out`;
-    if (o.kind === 'rough3d') return `3D surface, ${L(o.zTop)} tall`;
-    if (o.kind === 'hole' || o.kind === 'drill') return `${o.centers.length > 1 ? `${o.centers.length} holes` : 'Hole'}, ${d}`;
-    if (o.kind === 'step') return `Step, ${d}`;
-    if (o.kind === 'thread') return `${o.count > 1 ? `${o.count} ${o.thread.name} threads` : `${o.thread.name} thread`}, ${L(o.thread.zHigh - o.thread.zLow)} deep`;
-    if (o.kind === 'chamfer') return `${o.count > 1 ? `${o.count} chamfers` : 'Chamfer'}, ${L(o.size)} \u00d7 ${Math.round(o.angle * 10) / 10}\u00b0`;
-    return `Pocket, ${d.split(' · ').pop()}`;
+  // The cuts a shape can take: an open line only on the line
+  const cutsFor = (closed) => (closed ? ['outside', 'inside', 'pocket', 'online', 'off'] : ['online', 'off']);
+  // A cut and depth chooser: data-k says what it sets (group key or 'sel')
+  function chooser(k, c, closed) {
+    const opts = cutsFor(closed).map((x) => `<option value="${x}" ${c.cut === x ? 'selected' : ''}>${esc(N.CUT_NAMES[x])}</option>`).join('');
+    const through = c.depth === null || c.depth === undefined;
+    const depthIn = c.cut === 'off' ? '' : `<label class="ncc-chk"><input type="checkbox" data-through="${esc(k)}" ${through ? 'checked' : ''}> Through</label>
+      ${through ? '' : `<input class="ncc-input ncc-mono ncc-depth" inputmode="decimal" aria-label="Depth (${S.units})" data-depth="${esc(k)}" value="${S.units === 'in' ? Math.round(c.depth / N.units.INCH * 1000) / 1000 : Math.round(c.depth * 100) / 100}"><span class="ncc-unit">${S.units} deep</span>`}`;
+    return `<div class="ncc-choose"><select class="ncc-select" data-cut="${esc(k)}" aria-label="Cut">${opts}</select>${depthIn}</div>`;
   }
 
-  function planHints(modelStep) {
-    if (!S.plan) return '';
-    const slow = !modelStep && S.slow ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.slow)}</span></div>` : '';
-    const w = S.plan.warnings.filter((x) => !modelStep || x.kind === 'undercut' || x.kind === 'sloped' || x.kind === 'edges' || x.kind === 'surface3d');
-    if (!w.length && modelStep) return `<div class="ncc-hint">${ICONS.info}<span>Everything can be cut from the top in one setup.</span></div>`;
-    return slow + w.map((x) => `<div class="ncc-hint ${x.kind === 'notool' || x.kind === 'noball' ? 'bad' : ''}">${x.kind === 'notool' || x.kind === 'noball' ? ICONS.warn : ICONS.info}<span>${esc(x.text)}</span></div>`).join('');
+  function decisionsCard() {
+    const gOf = N.groupOf(S.groups);
+    const rows = S.groups.map((g) => {
+      const c = N.choiceFor(S.a, S.job, g.idx[0], gOf);
+      const own = g.idx.filter((i) => S.job.shapes[i]).length;
+      return `<div class="ncc-decide" data-hover="${esc(g.key)}">
+        <div class="ncc-decide-name"><span class="ncc-swatch" style="background: ${CUT_COLORS[c.cut]}"></span>${esc(groupName(g))}${own ? `<small> · ${own} set on ${own > 1 ? 'their' : 'its'} own</small>` : ''}</div>
+        ${chooser(g.key, c, g.kind !== 'line')}
+      </div>`;
+    }).join('');
+    return `<div class="ncc-card"><div class="ncc-label">What to cut</div>${rows}</div>`;
   }
 
-  function modelOverlay() {
-    if (!S.plan) return '';
-    const kinds = [...new Set(S.plan.ops.filter((o) => o.kind !== 'face' && o.kind !== 'corners' && o.kind !== 'finish3d' && o.kind !== 'rest3d' && o.id !== 'chamfer').map((o) => o.kind))];
-    const label = { pocket: 'Pockets', hole: 'Holes', drill: 'Holes', step: 'Steps', cutout: 'Outline', rough3d: '3D surface', chamfer: 'Chamfers', thread: 'Threads' };
-    return `<div class="ncc-overlay tr">${kinds.map((k) => `<span class="ncc-chip"><span class="ncc-swatch" style="background: ${OP_COLORS[k]}"></span>${label[k]}</span>`).join('')}</div>
-      <div class="ncc-overlay bl"><span class="ncc-chip">Drag to rotate</span><span class="ncc-chip">Scroll to zoom</span><span class="ncc-chip">Click a face to put it on top</span></div>`;
+  function selectionCard() {
+    if (!S.sel.size) return '';
+    const idx = [...S.sel], gOf = N.groupOf(S.groups);
+    const c = N.choiceFor(S.a, S.job, idx[0], gOf);
+    const closed = idx.every((i) => S.a.loops[i]);
+    const own = idx.some((i) => S.job.shapes[i]);
+    return `<div class="ncc-card ncc-sel-card">
+        <div class="ncc-row"><div class="ncc-row-title">${idx.length > 1 ? `${idx.length} shapes selected` : esc(shapeName(idx[0]))}</div><button type="button" class="ncc-link" data-act="unselect">Clear</button></div>
+        ${chooser('sel', c, closed)}
+        ${own ? '<button type="button" class="ncc-link" data-act="sel-reset">Back to its group’s choice</button>' : '<div class="ncc-row-sub">A change here applies to the selected shapes only.</div>'}
+      </div>`;
+  }
+
+  // The stock's thickness: no guess; nothing is planned until it's given
+  function thicknessCard() {
+    const t = S.job.stock.thickness;
+    const v = t ? (S.units === 'in' ? Math.round(t / N.units.INCH * 1000) / 1000 : Math.round(t * 100) / 100) : '';
+    return `<div class="ncc-card ${t ? '' : 'ncc-need'}">
+        <div class="ncc-row"><div class="ncc-row-text"><div class="ncc-row-title">Stock thickness</div><div class="ncc-row-sub">${t ? '“Through” cuts go this deep and a little into the spoilboard.' : 'How thick is the board? Measure it: every “through” cut depends on it.'}</div></div>
+        <div style="display: flex; align-items: center; gap: 6px"><input class="ncc-input ncc-mono ncc-depth" inputmode="decimal" aria-label="Stock thickness (${S.units})" data-thick value="${v}" placeholder="?"><span class="ncc-unit">${S.units}</span></div></div>
+      </div>`;
+  }
+
+  // The drawing's size: a scale, or inches for a file drawn in them
+  function sizeCard() {
+    const a = S.a, raw = N.bounds(S.raw);
+    const unitless = S.info?.units == null || S.info?.units === 'unitless';
+    const pct = Math.round(S.scale * 10000) / 100;
+    return `<div class="ncc-card">
+        <div class="ncc-fields">${['X', 'Y'].map((ax, k) => `<div class="ncc-field"><label for="ncc-size${k}">${ax} (${S.units})</label><input id="ncc-size${k}" class="ncc-input ncc-mono" inputmode="decimal" data-size="${k}" value="${S.units === 'in' ? Math.round(a.size[k] / N.units.INCH * 1000) / 1000 : Math.round(a.size[k] * 100) / 100}"></div>`).join('')}</div>
+        <div class="ncc-row-sub">${pct === 100 ? 'As drawn' : `Scaled to ${pct}%`}${S.info?.units ? ` · the file says ${esc(S.info.units)}` : ''}.${pct !== 100 ? ' <button type="button" class="ncc-link" data-scale="reset">Back to the drawing’s size</button>' : ''}</div>
+        ${unitless && pct === 100 && Math.max(raw.w, raw.h) < 50 ? `<div class="ncc-hint">${ICONS.info}<span>Only ${n(Math.max(raw.w, raw.h))} across and the file has no unit: it may be in inches. <button type="button" class="ncc-link" data-scale="inch">Make it inches (× 25.4)</button></span></div>` : ''}
+        ${S.info?.notes ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.info.notes)}</span></div>` : ''}
+      </div>`;
+  }
+
+  function planHints() {
+    const slow = S.slow ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.slow)}</span></div>` : '';
+    if (!S.plan) return slow;
+    return slow + S.plan.warnings.map((x) => `<div class="ncc-hint ${x.kind === 'notool' ? 'bad' : ''}">${x.kind === 'notool' ? ICONS.warn : ICONS.info}<span>${esc(x.text)}</span></div>`).join('');
   }
 
   let shownPart = null;
-  function showPartView() {
-    if (!S.part) return;
-    shownResult = null; shownZero = null;
-    const key = S.part.positions;
-    const overlays = (S.plan?.ops || []).filter((o) => o.kind !== 'face' && o.kind !== 'corners').flatMap((o) => {
-      if (o.kind === 'cutout') return [{ loops: o.region, z: o.zTop + 0.05, color: OP_COLORS.cutout, dashed: true }];
-      if (o.kind === 'chamfer') return o.id === 'chamfer' ? [] : o.show.map((v) => ({ loops: v.loops, z: v.z + 0.05, color: OP_COLORS.chamfer }));
-      if (o.centers && !o.region) return [{ loops: o.centers.map((c) => circle(c)), z: o.zTop + 0.05, color: OP_COLORS[o.kind] }];
-      return [{ loops: o.region, z: o.zTop + 0.05, color: OP_COLORS[o.kind] }];
-    });
-    viewer.keepCamera = shownPart === key;
-    viewer.showPart(S.part, overlays);
-    shownPart = key;
-    viewer.onFrame = null;
-    viewer.onPick = async (n) => {
-      if (S.loading) return;
-      const back = S.up;
-      try {
-        await orient(n);
-        // A face that leaves undercuts goes back to the side it was on
-        if (S.analysis.undercut && back !== 'custom' && (!S.sides || S.sides[back]?.reachable)) {
-          await orient(back);
-          flash('With that face up, some of the part can\u2019t be reached from the top.');
-        }
-      } catch (e) { S.error = e.message; render(); }
-    };
-  }
 
   // ---------- step 2 ----------
   function stepStock() {
-    const j = S.job, st = S.plan?.stock || N.stockBox(S.analysis, j);
+    const j = S.job, st = S.plan?.stock || N.stockBox(S.a, j);
     const mats = Object.entries(N.MATERIALS).map(([k, m]) => `<button class="ncc-pick ncc-mat ${j.material === k ? 'sel' : ''}" type="button" data-material="${k}"><span class="ncc-mat-swatch" style="background: ${STOCK_COLORS[k]}"></span>${esc(m.name)}<small>${esc(m.note)}</small></button>`).join('');
-    const field = (key, label, value) => `<div class="ncc-field"><label for="ncc-${key}">${label}</label><input id="ncc-${key}" class="ncc-input ncc-mono" inputmode="decimal" data-stock="${key}" value="${S.units === 'in' ? Math.round(value / N.units.INCH * 1000) / 1000 : Math.round(value * 100) / 100}" ${j.stock.fit ? 'disabled' : ''}></div>`;
+    const field = (key, label, value) => `<div class="ncc-field"><label for="ncc-${key}">${label}</label><input id="ncc-${key}" class="ncc-input ncc-mono" inputmode="decimal" data-stock="${key}" value="${S.units === 'in' ? Math.round(value / N.units.INCH * 1000) / 1000 : Math.round(value * 100) / 100}" ${j.stock.fit && key !== 'thickness' ? 'disabled' : ''}></div>`;
     // Two even columns: what the stock is on the left, where zero is on the right
     return `
       <div class="ncc-col ncc-half">
         <div class="ncc-card ncc-mat-card"><div class="ncc-label">Material</div><div class="ncc-picks ncc-mats">${mats}</div></div>
         <div class="ncc-card">
-          ${toggleRow('fit', 'Size the stock to the part', `Adds ${L(j.stock.margin)} on every side and ${L(j.stock.extraTop)} on top`, j.stock.fit)}
+          ${toggleRow('fit', 'Size the stock to the drawing', `Adds ${L(j.stock.margin)} on every side`, j.stock.fit)}
           <div class="ncc-fields">${field('width', `Width X (${S.units})`, st.width)}${field('depth', `Depth Y (${S.units})`, st.depth)}${field('thickness', `Thickness Z (${S.units})`, st.thickness)}</div>
         </div>
         <div class="ncc-card">
@@ -566,7 +533,7 @@ export function mountApp(root, host, engine) {
 
   let shownZero = null;
   function showZeroView() {
-    const st = S.plan?.stock || N.stockBox(S.analysis, S.job);
+    const st = S.plan?.stock || N.stockBox(S.a, S.job);
     const points = N.ZERO_POINTS.map((key) => ({ key, ...N.zeroPoint(st, { xy: key, z: 'top' }) }));
     const accent = getComputedStyle(root).getPropertyValue('--color-accent').trim() || '#4c6ef5';
     // Same stock: keep the camera where the operator turned it
@@ -577,7 +544,7 @@ export function mountApp(root, host, engine) {
     shownPart = null; shownResult = null;
     viewer.onPick = null;
     viewer.onMarker = (k) => { if (k !== S.job.zero.xy) { S.job.zero.xy = k; changed(); } };
-    viewer.onAxis = (a) => turnPart(a);
+    viewer.onAxis = null;
   }
 
   // ---------- step 3 ----------
@@ -603,7 +570,7 @@ export function mountApp(root, host, engine) {
     const pair = `<div class="ncc-pair">
           <div class="ncc-card"><div class="ncc-label">Finish</div>
             <div class="ncc-seg" role="group" aria-label="Finish">${Object.entries(N.FINISHES).map(([k, v]) => `<button type="button" class="${S.job.finish === k ? 'sel' : ''}" data-finish="${k}">${v.name}</button>`).join('')}</div>
-            <div class="ncc-row-sub">${p.ops.some((o) => o.kind === 'finish3d') ? `3D: passes spaced for ${L(N.RIDGE_3D[S.job.finish], S.units === 'in' ? 4 : 2)} ridges${S.job.finish === 'fast' ? '; flat walls without a finishing pass' : ''}.` : ''} ${{ fast: 'Bigger steps, no finishing pass.', balanced: `Leaves ${L(0.2, S.units === 'in' ? 3 : 1)} on the walls, then a clean finishing pass.`, smooth: 'Lighter steps and a finishing pass, for the best walls.' }[S.job.finish]}</div>
+            <div class="ncc-row-sub">${{ fast: 'Bigger steps, no finishing pass.', balanced: `Leaves ${L(0.2, S.units === 'in' ? 3 : 1)} on the walls, then a clean finishing pass.`, smooth: 'Lighter steps and a finishing pass, for the best walls.' }[S.job.finish]}</div>
             ${f ? `<div class="ncc-mono ncc-row-sub" style="line-height: 1.6">${esc(mainOp.tool.name)}<br>${esc(N.MATERIALS[S.job.material].name)} \u00b7 ${f.rpm.toLocaleString()} RPM<br>${S.units === 'in' ? `${n(f.feed, 1)} in/min` : `${f.feed.toLocaleString()} mm/min`} \u00b7 ${L(f.stepdown, S.units === 'in' ? 3 : 2)} per pass</div>` : ''}
           </div>
           <div class="ncc-card"><div class="ncc-label">Tools for this job</div>
@@ -614,34 +581,9 @@ export function mountApp(root, host, engine) {
     // Landscape: list | drawing over Finish + Tools. Portrait: the drawing
     // stays on top and only the list (Finish + Tools at its end) scrolls.
     return `<div class="ncc-plan">
-        <div class="ncc-plan-list" data-keep-scroll="ops">${threeD()}<div class="ncc-ops">${rows}</div>${chamferCard()}${planHints(false)}<div class="ncc-plan-pair-in">${pair}</div></div>
+        <div class="ncc-plan-list" data-keep-scroll="ops"><div class="ncc-ops">${rows}</div>${planHints(false)}<div class="ncc-plan-pair-in">${pair}</div></div>
         <div class="ncc-card ncc-viewcard ncc-plan-view"><div data-viewer></div></div>
         <div class="ncc-plan-pair">${pair}</div>
-      </div>`;
-  }
-
-  // Chamfer the top edges: an option for 2.5D parts, cut with a V-bit
-  function chamferCard() {
-    const c = S.job.chamfer, on = c?.size > 0;
-    const size = on ? c.size : CHAMFER.size;
-    const edges = c?.edges || 'all';
-    const sub = !on ? 'Off: edges stay sharp.' : S.plan.ops.some((o) => o.kind === 'chamfer') ? 'A V-bit runs along each top edge of a flat face, after the cut-out.' : 'No edge can be chamfered: see the notes below.';
-    return `<div class="ncc-card" style="margin-top: 10px">
-        <div class="ncc-row"><div class="ncc-row-text"><div class="ncc-row-title">Add Chamfer to top surfaces</div><div class="ncc-row-sub">${esc(sub)}</div></div><button class="ncc-toggle" type="button" role="switch" aria-checked="${on}" aria-label="Add Chamfer to top surfaces" data-toggle="chamfer"></button></div>
-        ${on ? `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">Width</span><div class="ncc-stepper"><button type="button" data-chamfer="-1" aria-label="Narrower chamfer" ${size <= CHAMFER.min + 1e-6 ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${L(size, S.units === 'in' ? 3 : 1)}</span><button type="button" data-chamfer="1" aria-label="Wider chamfer" ${size >= CHAMFER.max - 1e-6 ? 'disabled' : ''}>+</button></div></div>
-        <div class="ncc-seg" role="group" aria-label="Which edges">${Object.entries({ all: 'All edges', outside: 'Outside', inside: 'Pockets & holes' }).map(([k, v]) => `<button type="button" class="${edges === k ? 'sel' : ''}" data-chamfer-edges="${k}">${v}</button>`).join('')}</div>` : ''}
-      </div>`;
-  }
-
-  // Curved faces cut in 3D, or left square: shown when the part has any
-  function threeD() {
-    // What was asked for (or chosen from the shape), and whether it could be done
-    const on = !!S.plan.mode3d, done = !!S.plan.did3d;
-    if (!on && !(S.plan.curved ?? S.plan.analysis.sloped)) return '';
-    return `<div class="ncc-op" style="margin-bottom: 10px">
-        <div class="ncc-op-icon" style="background: color-mix(in srgb, ${OP_COLORS.finish3d} 16%, transparent); color: ${OP_COLORS.finish3d}">${ICONS.finish3d}</div>
-        <div class="ncc-op-text"><div class="ncc-op-title">Cut curved faces in 3D</div><div class="ncc-op-sub">${!on ? 'Off: sloped and curved faces are left square.' : done ? 'Roughed in layers, then a ball end mill follows the surface.' : 'On, but no end mill is long enough: cut in 2.5D for now.'}</div></div>
-        <button class="ncc-toggle" type="button" role="switch" aria-checked="${on}" aria-label="Cut curved faces in 3D" data-toggle="3d"></button>
       </div>`;
   }
 
@@ -652,7 +594,7 @@ export function mountApp(root, host, engine) {
     const overlays = ops.flatMap((o) => {
       const dim = S.focusOp && S.focusOp !== o.id;
       if (o.kind === 'chamfer') return o.show.map((v) => ({ loops: v.loops, z: v.z + 0.05, color: OP_COLORS.chamfer, opacity: dim ? 0.2 : 1, top: v.z }));
-      const loops = o.region || (o.centers || []).map((c) => circle(c));
+      const loops = o.region || (o.lines || []).map((l) => l.pts) || [];
       return { loops, z: o.kind === 'cutout' ? o.zTop + 0.05 : Math.max(o.zBottom, 0) + 0.05, color: OP_COLORS[o.kind], dashed: o.kind === 'cutout', opacity: dim ? 0.2 : 1, top: o.zTop };
     });
     viewer.keepCamera = shownPart === S.part?.positions;
@@ -694,7 +636,7 @@ export function mountApp(root, host, engine) {
       </div>`;
   }
 
-  const programName = () => `${(S.fileName || 'part').replace(/\.(step|stp|stl|3mf)$/i, '')}.nc`;
+  const programName = () => `${(S.fileName || 'drawing').replace(/\.(dxf|svg|pdf|ai)$/i, '')}.nc`;
 
   function checks() {
     const c = S.simChecks;
@@ -979,13 +921,22 @@ export function mountApp(root, host, engine) {
   const changed = () => { S.maxStep = Math.min(S.maxStep, Math.max(S.step, 3)); S.result = null; replan(false); };
 
   root.addEventListener('click', (e) => {
+    // A shape in the drawing: select it (shift: add or remove); the empty
+    // drawing: clear
+    const shape = e.target.closest('[data-shape]');
+    if (shape || e.target.closest('[data-drawing]')) {
+      const i = shape ? +shape.dataset.shape : null;
+      if (i === null) S.sel = new Set();
+      else if (e.shiftKey || e.metaKey || e.ctrlKey) { if (S.sel.has(i)) S.sel.delete(i); else S.sel.add(i); }
+      else S.sel = S.sel.size === 1 && S.sel.has(i) ? new Set() : new Set([i]);
+      return render();
+    }
     const row = e.target.closest('[data-focus]');
     if (row && !e.target.closest('button, select')) { S.focusOp = S.focusOp === row.dataset.focus ? null : row.dataset.focus; render(); return; }
     const t = e.target.closest('button, [data-scrub]');
     if (!t || t.disabled) return;
     const d = t.dataset;
     if (d.go) return go(+d.go);
-    if (d.up) return orient(d.up).catch((err) => { S.error = err.message; render(); });
     if (d.material) { S.job.material = d.material; Object.assign(S.job.tabs, N.tabDefaults(d.material)); return changed(); }
     if (d.tabsize) { const t = tabSize(); const k = tab(); S.job.tabs[d.tabsize] = Math.max(k.min, Math.min(k.max, Math.round((t[d.tabsize] + +d.by * k.step) / k.grid) * k.grid)); return changed(); }
     if (d.zero) { S.job.zero.xy = d.zero; return changed(); }
@@ -998,18 +949,11 @@ export function mountApp(root, host, engine) {
       if (!S.job.stock.fit && st) Object.assign(S.job.stock, { width: st.width, depth: st.depth, thickness: st.thickness });
       return changed();
     }
-    if (d.toggle === 'lock') { S.lock = !S.lock; remember(); return render(); }
-    if (d.scale === 'reset') return rescale({ scale: [1, 1, 1] });
-    if (d.scale === 'inch') return rescale({ scale: [N.units.INCH, N.units.INCH, N.units.INCH] });
+    if (d.scale === 'reset') return rescale(1);
+    if (d.scale === 'inch') return rescale(N.units.INCH);
+    if (d.act === 'unselect') { S.sel = new Set(); return render(); }
+    if (d.act === 'sel-reset') { for (const i of S.sel) delete S.job.shapes[i]; return changed(); }
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
-    if (d.toggle === 'chamfer') {
-      const c = S.job.chamfer || {};
-      S.job.chamfer = c.size > 0 ? { ...c, last: c.size, size: 0 } : { edges: 'all', ...c, size: c.last || CHAMFER.size };
-      return changed();
-    }
-    if (d.chamfer) { const c = S.job.chamfer; c.size = Math.max(CHAMFER.min, Math.min(CHAMFER.max, Math.round((c.size + +d.chamfer * CHAMFER.step) / CHAMFER.step) * CHAMFER.step)); c.last = c.size; return changed(); }
-    if (d.chamferEdges) { S.job.chamfer.edges = d.chamferEdges; return changed(); }
-    if (d.toggle === '3d') { S.job.surface3d = !S.plan?.mode3d; S.job.disabled = {}; S.job.toolOverride = {}; return changed(); }
     if (d.op) { S.job.disabled[d.op] = !S.job.disabled[d.op]; return changed(); }
     if (d.speed) { PLAY.speed = +d.speed; return updatePlaybar(); }
     if (d.act === 'play') {
@@ -1054,10 +998,41 @@ export function mountApp(root, host, engine) {
     if (t.dataset.tool) { S.job.toolOverride[t.dataset.tool] = +t.value || t.value; return changed(); }
     if (t.dataset.size) {
       const k = +t.dataset.size, v = parseFloat(String(t.value).replace(',', '.'));
-      if (!(Number.isFinite(v) && v > 0 && S.analysis?.size[k] > 0)) return render();
-      const f = N.units.toMm(v, S.units) / S.analysis.size[k];
+      if (!(Number.isFinite(v) && v > 0 && S.a?.size[k] > 0)) return render();
+      const f = N.units.toMm(v, S.units) / S.a.size[k];
       if (Math.abs(f - 1) < 1e-9) return render();
-      return rescale({ by: S.lock ? [f, f, f] : [0, 1, 2].map((i) => (i === k ? f : 1)) });
+      return rescale(S.scale * f);
+    }
+    // The stock's thickness (step 1 and Stock & Zero)
+    if (t.matches('[data-thick]')) {
+      const v = parseFloat(String(t.value).replace(',', '.'));
+      if (Number.isFinite(v) && v > 0) S.job.stock.thickness = N.units.toMm(v, S.units);
+      return changed();
+    }
+    // A cut or depth for a group (its key) or the selection ('sel')
+    const k = t.dataset.cut ?? t.dataset.through ?? t.dataset.depth;
+    if (k !== undefined) {
+      const targets = k === 'sel' ? [...S.sel].map((i) => (S.job.shapes[i] ||= {})) : [(S.job.groups[k] ||= {})];
+      if (k === 'sel') {
+        // Each selected shape starts from what it has now
+        const gOf = N.groupOf(S.groups);
+        [...S.sel].forEach((i, q) => { const c = N.choiceFor(S.a, { ...S.job, shapes: {} }, i, gOf); if (targets[q].cut === undefined) Object.assign(targets[q], { cut: c.cut, depth: c.depth }); });
+      } else {
+        const g = S.groups.find((x) => x.key === k), c = N.choiceFor(S.a, { ...S.job, groups: {}, shapes: {} }, g.idx[0], null);
+        if (targets[0].cut === undefined) Object.assign(targets[0], { cut: c.cut, depth: c.depth });
+      }
+      for (const o of targets) {
+        if (t.dataset.cut !== undefined) {
+          o.cut = t.value;
+          // Through for the profiles; a depth for clearing and lines
+          o.depth = t.value === 'pocket' || t.value === 'online' ? (o.depth ?? S.job.depths[t.value]) : (t.value === 'off' ? o.depth : null);
+        } else if (t.dataset.through !== undefined) o.depth = t.checked ? null : Math.min(S.job.depths[o.cut] || S.job.depths.pocket, (S.job.stock.thickness || 6) - 0.5);
+        else {
+          const v = parseFloat(String(t.value).replace(',', '.'));
+          if (Number.isFinite(v) && v > 0) o.depth = N.units.toMm(v, S.units);
+        }
+      }
+      return changed();
     }
     if (t.dataset.stock) {
       const v = parseFloat(String(t.value).replace(',', '.'));
@@ -1105,7 +1080,7 @@ export function mountApp(root, host, engine) {
     btn.disabled = false;
   }
 
-  // The first name not taken in File Manager's ncCAM folder, from one
+  // The first name not taken in File Manager's ncCut2D folder, from one
   // listing (asking for each name logged a 404 for every free one)
   async function freePath(name) {
     const stem = name.replace(/\.nc$/, '');
@@ -1113,7 +1088,7 @@ export function mountApp(root, host, engine) {
     const walk = (list) => { for (const e of list || []) { if (e.type === 'folder') walk(e.children); else taken.add(e.path); } };
     walk((await api.get('/api/gcode-files'))?.tree);
     for (let n = 1; n < 1000; n++) {
-      const path = `ncCAM/${n < 2 ? name : `${stem} (${n}).nc`}`;
+      const path = `ncCut2D/${n < 2 ? name : `${stem} (${n}).nc`}`;
       if (!taken.has(path)) return path;
     }
     throw new Error('too many saved copies');
@@ -1126,7 +1101,7 @@ export function mountApp(root, host, engine) {
 
   render();
   // For the headless checks in dev/
-  window.__nccam = { S, PLAY, viewer, seek: (t) => seek(t) };
+  window.__nccut2d = { S, PLAY, viewer, seek: (t) => seek(t) };
 }
 
 function circle(c, n = 48) {

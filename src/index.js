@@ -1,5 +1,5 @@
-// lib/nccam.js: in the page it is the ncCAM dialog; started as a Web Worker
-// (from its own source) it is the engine that reads STEP files and makes
+// lib/nccut2d.js: in the page it is the ncCut2D dialog; started as a Web
+// Worker (from its own source) it is the engine that plans and makes
 // toolpaths.
 import { createEngine } from './engine.js';
 
@@ -10,42 +10,37 @@ if (typeof document === 'undefined') {
   self.onmessage = async ({ data }) => {
     try {
       const result = await handle(data);
-      const transfer = result && result.positions ? [result.positions.buffer, result.indices.buffer] : [];
+      const transfer = result?.part ? [result.part.positions.buffer, result.part.indices.buffer] : [];
       self.postMessage({ id: data.id, ok: true, result }, transfer);
     } catch (e) {
       self.postMessage({ id: data.id, ok: false, error: e.message || String(e) });
     }
   };
 } else {
-  const NcCam = (window.NcCam = window.NcCam || {});
+  const NcCut = (window.NcCut2D = window.NcCut2D || {});
   // An update loads this script into a page that still has the old build's
   // engine: its worker runs the old code, so start a new one.
-  if (NcCam.build !== BUILD && NcCam.engine) {
-    NcCam.engine.then((call) => call.worker?.terminate(), () => {});
-    NcCam.engine = null;
+  if (NcCut.build !== BUILD && NcCut.engine) {
+    NcCut.engine.then((call) => call.worker?.terminate(), () => {});
+    NcCut.engine = null;
   }
-  NcCam.build = BUILD;
-  NcCam.mount = async (root, host) => {
+  NcCut.build = BUILD;
+  NcCut.mount = async (root, host) => {
     const { mountApp } = await import('./ui/app.js');
     try {
       mountApp(root, host, await engineFor(host));
     } catch (e) {
-      root.textContent = `ncCAM could not start: ${e.message || e}`;
+      root.textContent = `ncCut2D could not start: ${e.message || e}`;
     }
   };
 
-  // One engine for every time the dialog opens: the 7.6 MB STEP reader
-  // loads once.
-  const engineFor = (host) => (NcCam.engine ||= startEngine(host));
+  // One engine for every time the dialog opens
+  const engineFor = (host) => (NcCut.engine ||= startEngine(host));
 
   async function startEngine(host) {
-    const wasm = await fetch(host.file('lib/occt-import-js.wasm')).then((r) => {
-      if (!r.ok) throw new Error(`lib/occt-import-js.wasm: ${r.status}`);
-      return r.arrayBuffer();
-    });
     let worker = null;
     try {
-      worker = new Worker(URL.createObjectURL(new Blob([NcCam.source || ''], { type: 'text/javascript' })));
+      worker = new Worker(URL.createObjectURL(new Blob([NcCut.source || ''], { type: 'text/javascript' })));
     } catch { worker = null; }
     if (worker) {
       let seq = 0;
@@ -61,13 +56,13 @@ if (typeof document === 'undefined') {
         waiting.set(id, { resolve, reject });
         worker.postMessage({ ...args, id, type }, transfer);
       });
-      const ok = await Promise.race([call('init', { wasmBinary: wasm }).then(() => true), new Promise((r) => setTimeout(() => r(false), 5000))]);
+      const ok = await Promise.race([call('init').then(() => true), new Promise((r) => setTimeout(() => r(false), 5000))]);
       if (ok) { call.worker = worker; return call; }
       worker.terminate();
     }
     // Workers blocked: run in the page
     const handle = createEngine();
-    await handle({ type: 'init', wasmBinary: wasm });
+    await handle({ type: 'init' });
     return (type, args = {}) => handle({ ...args, type });
   }
 }

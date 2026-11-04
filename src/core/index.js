@@ -7,6 +7,7 @@ export { readDxf } from './dxf.js';
 export { readPdf } from './pdf.js';
 export { colorName, displayColor, buildLayers } from './layers.js';
 export * from './plan2d.js';
+export { partMesh2d } from './mesh2d.js';
 export * from './paths.js';
 export * from './gcode.js';
 export * from './sim.js';

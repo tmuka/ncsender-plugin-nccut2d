@@ -12,28 +12,41 @@ layer with per-shape overrides.
 
 ## Status
 
-- [x] Core: readers (ncLaser), `plan2d.js`, inside and on-the-line toolpaths,
-      tests (16: readers, nesting, defaults, pocket with island, hole and plate
-      to size in the simulator, tabs, per-shape over layer, G-code).
-- [ ] Engine worker: drop OCCT and the mesh; `load` reads DXF/PDF in the
-      worker (SVG in the page: it needs the DOM), `plan` runs plan2d +
-      toolpaths + simulate.
-- [ ] Dialog: the four steps below.
-- [ ] Preview: the shapes extruded to a part mesh (the viewer's ghost and the
-      gouge check); the stock simulation as in ncCAM.
+- [x] Core: readers (ncLaser), `plan2d.js`, inside and on-the-line toolpaths.
+- [x] Decisions grouped (`groups2d`): the outline (touching shapes joined),
+      counterbore steps (concentric circles on one layer inside a part), holes
+      by size, shapes by size, lines. One choice per group, overrides per shape.
+- [x] Engine worker: plan2d, the part model (`mesh2d.js`, extruded for the
+      preview), toolpaths, the rapid check.
+- [x] Dialog step 1 (What to cut): the drawing flat and clickable, size and
+      inches, stock thickness (asked, never guessed: nothing is planned
+      without it), the decision rows, warnings. Steps 2-4 are ncCAM's.
+- [x] Tests: 19, plus a browser walkthrough (DXF, SVG, PDF and a real ATC
+      drawing that isn't ours: test only, never committed).
 - [ ] Independent review, then the user's Pi.
 
 Later, from ncCAM's ops already there: drills for circles that match a drill,
-holes spiralled, corners cleaned with a smaller end mill, chamfers (V-bit).
+holes spiralled, corners cleaned with a smaller end mill, chamfers (V-bit);
+grooves in the part model; inside tabs; rotate and mirror on step 1.
+
+## The unknowns (what step 1 asks)
+
+Every drawing leaves these open, so they're questions, not guesses:
+1. The stock's thickness (and whether the outline is cut out or the board is
+   already that shape: the outline's row, Off).
+2. Each kind of hole: through, or a pocket to a depth.
+3. Counterbores: each step's depth.
+4. Lines: a groove, or a construction line (Off).
+5. Areas: cut through, or cleared lower.
 
 ## The choices
 
-| Cut | Tool path | Default for | Depth default |
+| Cut (QuickCut's names) | Tool path | Default for | Depth default |
 |---|---|---|---|
-| Outside | the tool outside the line, climb (clockwise), tabs when through | a closed shape inside nothing, or inside a hole | through |
-| Inside | the tool inside the line, climb (counter-clockwise), no tabs yet | a closed shape inside a part | through |
+| Outer (part) | the tool outside the line, climb (clockwise), tabs when through | a closed shape inside nothing, or inside a hole | through |
+| Inner (perimeter) | the tool inside the line, climb (counter-clockwise), no tabs yet | a closed shape inside a part | through |
 | On the line | the tool's centre on the line; open lines back and forth per step-down | an open line | 1 mm |
-| Pocket | cleared inside, islands kept: other shapes inside stand, pockets in pockets alternate (even-odd) | (picked) | 3 mm |
+| Inner (clearing) | cleared inside, islands kept: other shapes inside stand, pockets in pockets alternate (even-odd) | (picked) | 3 mm |
 | Off | nothing | | |
 
 - **Through** = the stock's thickness plus the break-through (0.3 mm).

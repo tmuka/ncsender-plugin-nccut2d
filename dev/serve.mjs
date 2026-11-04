@@ -12,14 +12,14 @@ createServer((req, res) => {
   const p = url.pathname;
   if (p === '/' ) { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(readFileSync('dev/harness.html')); }
   if (p.startsWith('/fixtures/')) { res.writeHead(200); return res.end(readFileSync('tests' + p)); }
-  if (p === '/api/plugins/com.ncsender.nccam/config-ui') return json(res, { configUI: readFileSync('config.html', 'utf8').replace('__SERVER_PORT__', String(port)) });
-  if (p === '/api/plugins/com.ncsender.nccam/icon') {
+  if (p === '/api/plugins/com.tmuka.nccut2d/config-ui') return json(res, { configUI: readFileSync('config.html', 'utf8').replace('__SERVER_PORT__', String(port)) });
+  if (p === '/api/plugins/com.tmuka.nccut2d/icon') {
     const f = url.searchParams.get('file');
     if (!f || f.includes('..') || !existsSync(f)) { res.writeHead(404); return res.end(); }
     res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); return res.end(readFileSync(f));
   }
   if (p === '/api/settings') return json(res, { unitsPreference: process.env.UNITS || 'metric', safeZHeight: -5, tool: { numbering: 'slot' } });
-  if (p === '/api/tools') return json(res, LIBRARY);
+  if (p === '/api/tools') return json(res, process.env.TOOLS ? JSON.parse(readFileSync(process.env.TOOLS, 'utf8')) : LIBRARY);
   if (p === '/api/firmware') return json(res, { settings: { 30: { value: '24000' }, 110: { value: '5000' }, 111: { value: '5000' }, 130: { value: '800' }, 131: { value: '800' }, 132: { value: '150' } } });
   if (p === '/api/server-state') return json(res, { machineState: { connected: true, tool: 1 } });
   if (p === '/api/gcode-files') return json(res, { tree: [{ type: 'folder', path: 'ncCAM', children: [...saved.keys()].map((k) => ({ type: 'file', path: k })) }] });

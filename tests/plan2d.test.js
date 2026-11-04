@@ -125,3 +125,44 @@ test('counterbores: concentric circles are a stepped hole, the innermost through
   assert.ok(at(30 + 1.5, 20) < 0, `through ${at(31.5, 20)}`);
   assert.ok(at(30 + 6.6, 20) > 9.9, 'not past the counterbore');
 });
+
+test('groups: one decision per kind of shape; a group choice applies to all its shapes', async () => {
+  // A 3-block outline (touching), 3 alike holes, two counterbores, a seam line
+  const shapes = N.readDxf(dxf({ entities: [
+    lwpoly('0', [[0, 0], [100, 0], [100, 40], [0, 40]], true), lwpoly('0', [[100, 0], [130, 0], [130, 40], [100, 40]], true), lwpoly('0', [[-20, 0], [0, 0], [0, 40], [-20, 40]], true),
+    circle('0', 20, 20, 8), circle('0', 45, 20, 8), circle('0', 70, 20, 8),
+    circle('0', 90, 10, 4), circle('0', 90, 10, 2), circle('0', 90, 30, 4), circle('0', 90, 30, 2),
+    lwpoly('0', [[115, 0], [115, 40]], true),
+  ] })).shapes;
+  const a = N.analyze2d(shapes);
+  const groups = N.groups2d(a);
+  assert.deepEqual(groups.map((g) => [g.kind, g.idx.length, g.cut]), [['outline', 3, 'outside'], ['counterbore', 2, 'pocket'], ['counterbore', 2, 'inside'], ['circle', 3, 'inside'], ['line', 1, 'online']]);
+  // (the line off: the part model leaves grooves out)
+  const job = { ...N.defaultJob(a, 10), groups: { [groups[3].key]: { cut: 'pocket', depth: 4 }, [groups[4].key]: { cut: 'off' } } };
+  const p = N.toolpaths(N.plan2d(a, tools, job));
+  // The three touching blocks are one part: one loop to cut round
+  const out = p.ops.find((o) => o.kind === 'cutout');
+  assert.equal(N.clip.regions(out.region).length, 1, 'touching blocks joined');
+  assert.ok(Math.abs(N.clip.area(out.region) - 150 * 40) < 1);
+  const pocket = p.ops.find((o) => o.kind === 'pocket' && o.zBottom === 6);
+  assert.ok(pocket && Math.abs(N.clip.area(pocket.region) - 3 * Math.PI * 64) < 3, 'the three holes are 4 mm pockets');
+  // The part model: top at 10, pocket floors at 6, through holes open
+  const m = N.partMesh2d(p);
+  const zs = new Set(); for (let i = 2; i < m.positions.length; i += 3) zs.add(Math.round(m.positions[i] * 100) / 100);
+  assert.ok(zs.has(10) && zs.has(6) && zs.has(0), [...zs].join(','));
+  const { hm } = N.simulate(p, 0.25);
+  const ph = N.partHeights(m, hm);
+  let gouges = 0;
+  for (let i = 0; i < ph.length; i++) if (ph[i] > -Infinity && hm.h[i] < ph[i] - 0.3) gouges++;
+  assert.ok(gouges < ph.length * 0.002, `${gouges} cells cut below the part`);
+});
+
+test('insides: a big hole gets the big end mill, a small one the small; no extra bit for a few', async () => {
+  const shapes = N.readDxf(dxf({ entities: [lwpoly('0', [[0, 0], [120, 0], [120, 50], [0, 50]], true), circle('0', 30, 25, 15.5), circle('0', 70, 25, 15.5), circle('0', 100, 15, 2.5), circle('0', 100, 35, 3.2)] })).shapes;
+  const a = N.analyze2d(shapes);
+  // A 6 mm bit would fit the Ø6.4 hole only: the 1/8" cutting the Ø5 does it too
+  const lib = N.normalizeTools([...LIBRARY, { id: 11, toolId: 11, name: '6 mm end mill', type: 'flat', diameter: 6, dimensions: { flute_length: 25 } }]);
+  const p = N.toolpaths(N.plan2d(a, lib, N.defaultJob(a, 10)));
+  const ins = p.ops.filter((o) => o.kind === 'inside').map((o) => [o.tool.name, o.loops.length]);
+  assert.deepEqual(ins, [['1/4" Flat End Mill', 2], ['1/8" Flat End Mill', 2]]);
+});

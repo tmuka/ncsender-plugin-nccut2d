@@ -1,5 +1,5 @@
 <style>
-  /* ncCAM owns the whole dialog: its own rail, Close and footer. */
+  /* ncCut2D owns the whole dialog: its own rail, Close and footer. */
   .plugin-dialog-header { display: none !important; }
   .plugin-dialog-content { padding: 0 !important; }
 
@@ -161,6 +161,19 @@
   .ncc-recent-x:hover { color: var(--color-text-primary); background: var(--color-surface-muted); }
   .ncc-recent-x svg { width: 16px; height: 16px; }
   .ncc-recent-pick { max-width: 220px; }
+  .ncc-drawing { flex: 1; min-height: 260px; border-radius: 12px; background: var(--color-surface-muted); padding: 10px; display: flex; }
+  .ncc-drawing svg path:hover { stroke-width: 3px; }
+  .ncc-decide { padding: 10px 0; border-top: 1px solid var(--color-border); display: flex; flex-direction: column; gap: 8px; }
+  .ncc-decide:first-of-type { border-top: 0; padding-top: 2px; }
+  .ncc-decide-name { font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .ncc-decide-name small { color: var(--color-text-secondary); }
+  .ncc-choose { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ncc-choose .ncc-select { flex: 1 1 100%; min-width: 0; }
+  .ncc-depth { width: 84px !important; text-align: right; }
+  .ncc-unit { font-size: 13px; color: var(--color-text-secondary); white-space: nowrap; }
+  .ncc-chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; cursor: pointer; }
+  .ncc-need { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+  .ncc-sel-card { border: 1px solid var(--color-accent); display: flex; flex-direction: column; gap: 8px; }
   .ncc-viewcard { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 14px; }
   .ncc-viewport {
     position: relative; flex: 1; min-height: 300px; border-radius: 12px; overflow: hidden;
@@ -257,31 +270,31 @@
 </style>
 
 <div class="ncc-wrapper" id="ncc-root">
-  <div class="ncc-busy" style="position: static; flex: 1; background: none;"><span class="ncc-spin"></span>Starting ncCAM…</div>
+  <div class="ncc-busy" style="position: static; flex: 1; background: none;"><span class="ncc-spin"></span>Starting ncCut2D…</div>
 </div>
 
 <script>
 (function () {
   var PORT = __SERVER_PORT__;
-  var BUILD = '0.1.5-mw19aq7v';
+  var BUILD = '0.0.1-mw1lpqs6';
   var base = window.ncSender && typeof window.ncSender.getApiBaseUrl === 'function' ? window.ncSender.getApiBaseUrl(PORT) : '';
-  var file = function (name) { return base + '/api/plugins/com.ncsender.nccam/icon?file=' + encodeURIComponent(name); };
+  var file = function (name) { return base + '/api/plugins/com.tmuka.nccut2d/icon?file=' + encodeURIComponent(name); };
   var root = document.getElementById('ncc-root');
-  var start = function () { window.NcCam.mount(root, { base: base, file: file }); };
-  if (window.NcCam && window.NcCam.build === BUILD) return start();
+  var start = function () { window.NcCut2D.mount(root, { base: base, file: file }); };
+  if (window.NcCut2D && window.NcCut2D.build === BUILD) return start();
   // The build in the URL: the server sends no Cache-Control, so the old
   // script could come from the cache after an update
-  fetch(file('lib/nccam.js') + '&v=' + encodeURIComponent(BUILD))
-    .then(function (r) { if (!r.ok) throw new Error('lib/nccam.js: ' + r.status); return r.text(); })
+  fetch(file('lib/nccut2d.js') + '&v=' + encodeURIComponent(BUILD))
+    .then(function (r) { if (!r.ok) throw new Error('lib/nccut2d.js: ' + r.status); return r.text(); })
     .then(function (code) {
       var s = document.createElement('script');
       s.textContent = code;
       document.head.appendChild(s);
-      window.NcCam.source = code;
+      window.NcCut2D.source = code;
       start();
     })
     .catch(function (err) {
-      root.innerHTML = '<div class="ncc-busy" style="position: static; flex: 1; background: none;">ncCAM could not start: ' + String(err.message || err).replace(/</g, '&lt;') + '</div>';
+      root.innerHTML = '<div class="ncc-busy" style="position: static; flex: 1; background: none;">ncCut2D could not start: ' + String(err.message || err).replace(/</g, '&lt;') + '</div>';
     });
 })();
 </script>
