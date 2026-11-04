@@ -24,8 +24,9 @@ export function partLevels(p, ops = p.ops.filter((o) => o.kind !== 'chamfer')) {
   const T = p.stock.top;
   ops = ops.filter((o) => o.enabled !== false);
   const cutouts = ops.filter((o) => o.kind === 'cutout');
-  // The part: what the outside cuts go round, else the whole stock
-  const F = cutouts.length ? C.union(cutouts.flatMap((o) => o.region)) : [[[p.stock.minX, p.stock.minY], [p.stock.maxX, p.stock.minY], [p.stock.maxX, p.stock.maxY], [p.stock.minX, p.stock.maxY]]];
+  // The part: what the outside cuts go round, else the whole stock (also
+  // when only parts in windows are cut out: the frame stays in the board)
+  const F = cutouts.some((o) => !o.inner) ? C.union(cutouts.flatMap((o) => o.region)) : [[[p.stock.minX, p.stock.minY], [p.stock.maxX, p.stock.minY], [p.stock.maxX, p.stock.maxY], [p.stock.minX, p.stock.maxY]]];
   // What's cut down to each height (0 for through)
   const byZ = new Map();
   for (const o of ops) {

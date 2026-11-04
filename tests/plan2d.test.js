@@ -245,3 +245,30 @@ test('Add Chamfer to top surfaces: the cut edges, after the cut-out, never the b
   assert.ok(!p2.ops.some((o) => o.kind === 'chamfer'));
   assert.ok(p2.warnings.some((w) => /needs a V-bit/.test(w.text)));
 });
+
+test('chamfer review: a counterbore step, a hand-picked V-bit too small, the outer cut-out off', async () => {
+  const chamfer = (j) => ({ ...j, chamfer: { size: 1, edges: 'all' } });
+  // An 80 x 80 plate with a counterbore: Ø40 to a step, Ø10 through
+  const cb = N.readDxf(dxf({ entities: [lwpoly('PART', [[0, 0], [80, 0], [80, 80], [0, 80]], true), circle('HOLE', 40, 40, 20), circle('HOLE', 40, 40, 5)] })).shapes;
+  const { p } = run(cb, chamfer);
+  const c = p.ops.find((o) => o.kind === 'chamfer');
+  const step = p.ops.find((o) => o.kind === 'pocket').zBottom;
+  assert.ok(step > 0 && c.levels.some((l) => Math.abs(l.z - step) < 1e-6), `levels ${c.levels.map((l) => l.z)} (step at ${step})`);
+  assert.equal(N.simulate(p, 0.25).collisions.length, 0);
+  // A V-bit picked by hand too small for the width: another, with a note
+  const lib = N.normalizeTools([...LIBRARY, { id: 30, toolId: 30, name: 'Tiny 60° V-bit', type: 'v-bit', diameter: 3.175 }]);
+  const a = N.analyze2d(sample());
+  const q = N.plan2d(a, lib, { ...N.defaultJob(a, 6), chamfer: { size: 3, edges: 'all' }, toolOverride: { chamfer: 30 } });
+  assert.notEqual(q.ops.find((o) => o.kind === 'chamfer').tool.id, 30);
+  assert.ok(q.warnings.some((w) => /Tiny 60° V-bit is too small/.test(w.text)));
+  // The plate left in the board (its cut-out off): the hole and the window
+  // still get their chamfers, not only the boss in the window
+  const all = run(sample(), chamfer).p.ops.find((o) => o.kind === 'chamfer').levels[0].loops.length;
+  const outer = run(sample(), chamfer).p.ops.find((o) => o.kind === 'cutout' && !o.inner).id;
+  const off = run(sample(), (j) => ({ ...chamfer(j), disabled: { [outer]: true } })).p.ops.find((o) => o.kind === 'chamfer');
+  assert.equal(off.levels[0].loops.length, all - 1, 'all but the plate outline');
+  // A rim too narrow for the chamfer: left square, and said so
+  const thin = N.readDxf(dxf({ entities: [lwpoly('PART', [[0, 0], [60, 0], [60, 40], [0, 40]], true), lwpoly('POCKET', [[10, 10], [50, 10], [50, 30], [10, 30]], true), lwpoly('POCKET', [[11, 11], [49, 11], [49, 29], [11, 29]], true)] })).shapes;
+  const t = run(thin, (j) => ({ ...chamfer(j), layers: { POCKET: { cut: 'pocket', depth: 1 } } })).p;
+  assert.equal(N.simulate(t, 0.25).collisions.length, 0);
+});

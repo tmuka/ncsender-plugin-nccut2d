@@ -364,7 +364,10 @@ function chamfer2d({ job, tools, stock, ops, warnings, L }) {
   const vbits = tools.filter((t) => (t.kind === 'vbit' || t.kind === 'chamfer') && t.angle > 0 && t.angle < 180);
   const half = (t) => (t.angle * Math.PI) / 360;
   const vFits = (t) => t.diameter / 2 >= w + CHAMFER_OUT + 0.1 && (!t.fluteLength || t.fluteLength >= (w + CHAMFER_OUT) / Math.tan(half(t)) - 1e-6);
-  const picked = tools.find((t) => t.id === job.toolOverride?.chamfer && vbits.includes(t));
+  // A bit picked by hand has to be wide enough: past its cone, its body would cut a step
+  const asked = tools.find((t) => t.id === job.toolOverride?.chamfer && vbits.includes(t));
+  const picked = asked && vFits(asked) ? asked : null;
+  if (asked && !picked) warnings.push({ kind: 'chamfer', text: `${asked.name} is too small for a ${L(w)} chamfer, so another V-bit is used.` });
   // A 90° bit makes the usual 45° chamfer; else the angle nearest to it
   const tool = picked || vbits.filter(vFits).sort((x, y) => Math.abs(x.angle - 90) - Math.abs(y.angle - 90) || x.diameter - y.diameter)[0];
   if (!tool) { warnings.push({ kind: 'chamfer', text: vbits.length ? `No V-bit in your Tool Library is wide enough for a ${L(w)} chamfer.` : 'Adding a chamfer to top surfaces needs a V-bit in your Tool Library.' }); return null; }
@@ -379,9 +382,15 @@ function chamfer2d({ job, tools, stock, ops, warnings, L }) {
   const standing = C.cleanLoops(C.difference(C.difference([rectLoop], swept), part), TINY);
   // Material at height h: the part's levels above it, the scrap, and the
   // floors of cuts that stop above it (a slot cut part way down)
-  const partial = ops.filter((o) => o.enabled !== false && o.zBottom > 0 && o.kind !== 'online');
+  // (less what a deeper cut took: a counterbore's through hole, a slot)
+  const areaOf = (o) => (o.kind === 'cutout' ? C.difference(C.offset(o.region, o.tool.diameter), o.region) : o.kind === 'inside' ? C.difference(o.loops, C.offset(o.loops, -o.tool.diameter)) : o.region);
+  const live = ops.filter((o) => o.enabled !== false && o.kind !== 'online' && o.kind !== 'chamfer');
+  const floors = live.filter((o) => o.zBottom > 0).map((o) => {
+    const deeper = live.filter((d) => d.zBottom < o.zBottom).flatMap(areaOf);
+    return { z: o.zBottom, area: deeper.length ? C.difference(areaOf(o), deeper) : areaOf(o) };
+  });
   const section = (h) => C.union([...levels.filter((l) => l.z > h).flatMap((l) => l.region), ...(T > h ? standing : []),
-    ...partial.filter((o) => o.zBottom > h).flatMap((o) => (o.kind === 'cutout' ? C.difference(C.offset(o.region, o.tool.diameter), o.region) : o.kind === 'inside' ? C.difference(o.loops, C.offset(o.loops, -o.tool.diameter)) : o.region))]);
+    ...floors.filter((f) => f.z > h).flatMap((f) => f.area)]);
   // Each tab, as far as the cone (tr wide) can reach it, on the cut-outs and
   // the windows cut with tabs
   const tabTop = job.tabs.height ?? tabDefaults(job.material).height;
@@ -400,7 +409,7 @@ function chamfer2d({ job, tools, stock, ops, warnings, L }) {
   // Only where a cut made the edge: the swept area, a little grown
   const keep = C.offset(swept, 0.05);
   const tr = tool.diameter / 2, R = w + CHAMFER_OUT;
-  let skipped = false, lifted = false;
+  let skipped = false, lifted = false, square = 0;
   const passes = [];
   const tops = [...new Set(levels.map((l) => l.z))].filter((z) => z > EPS).sort((x, y) => y - x);
   for (const z of tops) {
@@ -423,6 +432,8 @@ function chamfer2d({ job, tools, stock, ops, warnings, L }) {
     // Only loops with something to cut: a stretch of 0.5 mm clear of `bad`
     const inBad = (q) => !inArea(q, keep) || inArea(q, bad);
     const cuts = loops.filter((l) => {
+      // An edge no cut made (the board's own) isn't one to chamfer
+      if (!l.some((q) => inArea(q, keep))) return false;
       let run = 0;
       for (let i = 0; i < l.length; i++) {
         const p0 = l[i], p1 = l[(i + 1) % l.length], len2 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), k = Math.max(1, Math.ceil(len2 / 0.25));
@@ -431,6 +442,7 @@ function chamfer2d({ job, tools, stock, ops, warnings, L }) {
           else if ((run += len2 / k) >= 0.5) return true;
         }
       }
+      square++;
       return false;
     });
     if (!cuts.length) continue;
@@ -440,6 +452,7 @@ function chamfer2d({ job, tools, stock, ops, warnings, L }) {
   if (skipped) warnings.push({ kind: 'chamfer', text: `Some edges are too low to chamfer ${L(w)} without cutting the spoilboard.` });
   if (!passes.length) { warnings.push({ kind: 'chamfer', text: `No edge can take a ${L(w)} chamfer with ${tool.name}.` }); return null; }
   if (lifted) warnings.push({ kind: 'chamfer', text: 'The chamfer lifts over the tabs: sand those spots after breaking the part free.' });
+  if (square) warnings.push({ kind: 'chamfer', text: `${square} edge${square > 1 ? 's are' : ' is'} left square: a step below or other material is too close for a ${L(w)} chamfer.` });
   return { id: 'chamfer', kind: 'chamfer', label: 'Add Chamfer to top surfaces', tool, zTop: T, zBottom: Math.min(...passes.map((l) => l.z - l.depth)), region: C.union(levels.flatMap((l) => l.region)), levels: passes, show: passes.map((l) => ({ z: l.z, loops: l.loops })), size: w, angle: tool.angle / 2, detail: `${L(w)} wide \u00b7 ${Math.round(tool.angle)}\u00b0 bit \u00b7 ${{ all: 'all edges', outside: 'outside edges', inside: 'pockets and holes' }[which]}` };
 }
 

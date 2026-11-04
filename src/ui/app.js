@@ -56,7 +56,19 @@ export function mountApp(root, host, engine) {
   // QuickCut keeps its own); a PUT replaces them all
   const SETTINGS = '/api/plugins/com.tmuka.nccut2d/settings';
   let prefs = {};
-  const savePrefs = (patch) => { prefs = { ...prefs, ...patch }; return api.put(SETTINGS, prefs).catch((e) => console.warn('[ncCut2D] settings save failed:', e)); };
+  // false when ncSender didn't keep it
+  const savePrefs = async (patch) => {
+    const next = { ...prefs, ...patch };
+    try {
+      const res = await api.put(SETTINGS, next);
+      if (!res.ok) throw new Error(`ncSender said ${res.status}`);
+      prefs = next;
+      return true;
+    } catch (e) {
+      console.warn('[ncCut2D] settings save failed:', e);
+      return false;
+    }
+  };
 
   const S = {
     step: 1, maxStep: 1,
@@ -83,7 +95,7 @@ export function mountApp(root, host, engine) {
   // as QuickCut): shown and read in the machine's units, kept in mm
   const imperial = () => S.units === 'in';
   const fmt = (mm) => formatMm(mm, imperial());
-  const mmOf = (t) => { const v = textToMm(String(t.value).replace(/^(\d+),(\d+)$/, '$1.$2'), imperial()); return v != null && Number.isFinite(v) && v > 0 ? v : null; };
+  const mmOf = (t) => { const v = textToMm(t.value, imperial()); return v != null && Number.isFinite(v) && v > 0 ? v : null; };
   let planSeq = 0;
 
   // ---------- startup ----------
@@ -996,7 +1008,12 @@ export function mountApp(root, host, engine) {
     if (d.act === 'unselect') { S.sel = new Set(); return render(); }
     if (d.act === 'sel-reset') { for (const i of S.sel) delete S.job.shapes[i]; return changed(); }
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
-    if (d.toggle === 'savefm') { S.saveToFm = !S.saveToFm; savePrefs({ saveToFileManager: S.saveToFm }); return render(); }
+    if (d.toggle === 'savefm') {
+      S.saveToFm = !S.saveToFm;
+      render();
+      // Not kept: on for this program only, and said so
+      return savePrefs({ saveToFileManager: S.saveToFm }).then((ok) => ok || flash('Couldn’t remember Save to File Manager for next time.'));
+    }
     if (d.toggle === 'chamfer') {
       const c = S.job.chamfer || {};
       S.job.chamfer = c.size > 0 ? { ...c, last: c.size, size: 0 } : { edges: 'all', ...c, size: c.last || CHAMFER.size };
