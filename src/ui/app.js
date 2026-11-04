@@ -8,6 +8,9 @@ import { readSvg } from './svg.js';
 import { loadPdfjs } from './pdfjs.js';
 import { wireUnitFields, textToMm, formatMm } from 'ncsender-unit-input';
 
+// Add Chamfer to top surfaces: width in mm (as ncCAM)
+const CHAMFER = { size: 1, min: 0.5, max: 6, step: 0.5 };
+
 const STEPS = ['Drawing', 'Stock & Zero', 'Operations', 'Preview & Load'];
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -47,7 +50,13 @@ export function mountApp(root, host, engine) {
   const api = {
     get: async (p) => { const r = await fetch(host.base + p); if (!r.ok) throw new Error(`${p}: ${r.status}`); return r.json(); },
     post: (p, body) => fetch(host.base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    put: (p, body) => fetch(host.base + p, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   };
+  // ncSender keeps the plugin's settings (Save to File Manager's switch, as
+  // QuickCut keeps its own); a PUT replaces them all
+  const SETTINGS = '/api/plugins/com.tmuka.nccut2d/settings';
+  let prefs = {};
+  const savePrefs = (patch) => { prefs = { ...prefs, ...patch }; return api.put(SETTINGS, prefs).catch((e) => console.warn('[ncCut2D] settings save failed:', e)); };
 
   const S = {
     step: 1, maxStep: 1,
@@ -79,12 +88,15 @@ export function mountApp(root, host, engine) {
 
   // ---------- startup ----------
   (async () => {
-    const [settings, tools, fw, state] = await Promise.all([
+    const [settings, tools, fw, state, mine] = await Promise.all([
       api.get('/api/settings').catch(() => ({})),
       api.get('/api/tools').catch(() => []),
       api.get('/api/firmware').catch(() => null),
       api.get('/api/server-state').catch(() => null),
+      api.get(SETTINGS).catch(() => null),
     ]);
+    prefs = mine && typeof mine === 'object' ? mine : {};
+    S.saveToFm = !!prefs.saveToFileManager;
     S.units = N.units.unitsFrom(settings?.unitsPreference);
     S.numbering = settings?.tool?.numbering === 'toolId' ? 'toolId' : 'slot';
     S.slots = Math.max(0, Number(settings?.tool?.count) || 0);
@@ -598,7 +610,7 @@ export function mountApp(root, host, engine) {
     // Landscape: list | drawing over Finish + Tools. Portrait: the drawing
     // stays on top and only the list (Finish + Tools at its end) scrolls.
     return `<div class="ncc-plan">
-        <div class="ncc-plan-list" data-keep-scroll="ops"><div class="ncc-ops">${rows}</div>${planHints(false)}<div class="ncc-plan-pair-in">${pair}</div></div>
+        <div class="ncc-plan-list" data-keep-scroll="ops"><div class="ncc-ops">${rows}</div>${chamferCard()}${planHints(false)}<div class="ncc-plan-pair-in">${pair}</div></div>
         <div class="ncc-card ncc-viewcard ncc-plan-view"><div data-viewer></div></div>
         <div class="ncc-plan-pair">${pair}</div>
       </div>`;
@@ -619,6 +631,19 @@ export function mountApp(root, host, engine) {
     shownPart = S.part?.positions;
     shownResult = null; shownZero = null;
     viewer.onFrame = null; viewer.onMarker = null; viewer.onPick = null;
+  }
+
+  // Chamfer the top edges (ncCAM's option), cut with a V-bit
+  function chamferCard() {
+    const c = S.job.chamfer, on = c?.size > 0;
+    const size = on ? c.size : CHAMFER.size;
+    const edges = c?.edges || 'all';
+    const sub = !on ? 'Off: edges stay sharp.' : S.plan.ops.some((o) => o.kind === 'chamfer') ? 'A V-bit runs along each top edge the cuts made, after the cut-out.' : 'No edge can be chamfered: see the notes below.';
+    return `<div class="ncc-card" style="margin-top: 10px">
+        <div class="ncc-row"><div class="ncc-row-text"><div class="ncc-row-title">Add Chamfer to top surfaces</div><div class="ncc-row-sub">${esc(sub)}</div></div><button class="ncc-toggle" type="button" role="switch" aria-checked="${on}" aria-label="Add Chamfer to top surfaces" data-toggle="chamfer"></button></div>
+        ${on ? `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">Width</span><div class="ncc-stepper"><button type="button" data-chamfer="-1" aria-label="Narrower chamfer" ${size <= CHAMFER.min + 1e-6 ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${L(size, S.units === 'in' ? 3 : 1)}</span><button type="button" data-chamfer="1" aria-label="Wider chamfer" ${size >= CHAMFER.max - 1e-6 ? 'disabled' : ''}>+</button></div></div>
+        <div class="ncc-seg" role="group" aria-label="Which edges">${Object.entries({ all: 'All edges', outside: 'Outside', inside: 'Pockets & holes' }).map(([k, v]) => `<button type="button" class="${edges === k ? 'sel' : ''}" data-chamfer-edges="${k}">${v}</button>`).join('')}</div>` : ''}
+      </div>`;
   }
 
   function toolChoices(o) {
@@ -648,7 +673,7 @@ export function mountApp(root, host, engine) {
         ${S.slow ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.slow)}</span></div>` : ''}
         <div class="ncc-card">
           <div class="ncc-mono ncc-row-sub" style="margin: 0">${esc(programName())}${r ? ` · ${(r.gcode.split('\n').length - 1).toLocaleString()} lines` : ''}</div>
-          <button class="ncc-btn muted" type="button" data-act="save" ${r ? '' : 'disabled'}>Save to File Manager</button>
+          <div class="ncc-row" title="Also save each program you load to File Manager › ncCut2D"><div class="ncc-row-text"><div class="ncc-row-title">Save to File Manager</div><div class="ncc-row-sub">${S.saveToFm ? 'Load into ncSender also saves it in ncCut2D.' : 'Off: only loaded.'}</div></div><button class="ncc-toggle" type="button" role="switch" aria-checked="${!!S.saveToFm}" aria-label="Save to File Manager" data-toggle="savefm"></button></div>
         </div>
       </div>`;
   }
@@ -971,6 +996,14 @@ export function mountApp(root, host, engine) {
     if (d.act === 'unselect') { S.sel = new Set(); return render(); }
     if (d.act === 'sel-reset') { for (const i of S.sel) delete S.job.shapes[i]; return changed(); }
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
+    if (d.toggle === 'savefm') { S.saveToFm = !S.saveToFm; savePrefs({ saveToFileManager: S.saveToFm }); return render(); }
+    if (d.toggle === 'chamfer') {
+      const c = S.job.chamfer || {};
+      S.job.chamfer = c.size > 0 ? { ...c, last: c.size, size: 0 } : { edges: 'all', ...c, size: c.last || CHAMFER.size };
+      return changed();
+    }
+    if (d.chamfer) { const c = S.job.chamfer; c.size = Math.max(CHAMFER.min, Math.min(CHAMFER.max, Math.round((c.size + +d.chamfer * CHAMFER.step) / CHAMFER.step) * CHAMFER.step)); c.last = c.size; return changed(); }
+    if (d.chamferEdges) { S.job.chamfer.edges = d.chamferEdges; return changed(); }
     if (d.op) { S.job.disabled[d.op] = !S.job.disabled[d.op]; return changed(); }
     if (d.speed) { PLAY.speed = +d.speed; return updatePlaybar(); }
     if (d.act === 'play') {
@@ -984,7 +1017,6 @@ export function mountApp(root, host, engine) {
     if (d.recentOpen) return openRecent(d.recentOpen);
     if (d.forget) return store.forget(d.forget, S.recent).then((l) => { S.recent = l; render(); });
     if (d.act === 'load') return loadProgram(t);
-    if (d.act === 'save') return saveProgram(t);
   });
 
   // Scrubbing the bar
@@ -1083,29 +1115,31 @@ export function mountApp(root, host, engine) {
     setTimeout(() => { if (S.toast === text) { S.toast = ''; render(); } }, 2600);
   }
 
+  // Loads the program; with Save to File Manager on, also saves it (as
+  // QuickCut: the free name is looked up while it loads, and the save is
+  // done before the dialog closes, or it would be abandoned)
   async function loadProgram(btn) {
     btn.disabled = true;
+    const saving = !!S.saveToFm;
+    const lookup = saving ? freePath(programName()).catch((e) => e) : null;
     try {
       const res = await api.post('/api/gcode-files/load-temp', { filename: programName(), content: S.result.gcode });
       if (!res.ok) throw new Error(`ncSender said ${res.status}`);
+      if (saving) {
+        try {
+          const path = await lookup;
+          if (path instanceof Error) throw path;
+          const saved = await api.post('/api/gcode-files/file/save', { path, content: S.result.gcode });
+          if (!saved.ok) throw new Error(`save failed (${saved.status})`);
+        } catch (e) {
+          alert(`The program was loaded, but saving it to File Manager failed: ${e.message}`);
+        }
+      }
       close();
     } catch (e) {
       btn.disabled = false;
       flash(`Couldn’t load the program: ${e.message}`);
     }
-  }
-
-  async function saveProgram(btn) {
-    btn.disabled = true;
-    try {
-      const path = await freePath(programName());
-      const res = await api.post('/api/gcode-files/file/save', { path, content: S.result.gcode });
-      if (!res.ok) throw new Error(`save failed (${res.status})`);
-      flash(`Saved to File Manager: ${path}`);
-    } catch (e) {
-      flash(`Couldn’t save: ${e.message}`);
-    }
-    btn.disabled = false;
   }
 
   // The first name not taken in File Manager's ncCut2D folder, from one

@@ -13,11 +13,15 @@
 import * as C from './clip.js';
 import { feeds, tabDefaults, FINISHES } from './tools.js';
 import { len } from './units.js';
+import { partLevels, sweptArea, inArea } from './mesh2d.js';
+import { tabSpots } from './paths.js';
 
 export const CUTS = ['outside', 'inside', 'online', 'pocket', 'off'];
 // Named as QuickCut names its cut types
 export const CUT_NAMES = { outside: 'Outer (part)', inside: 'Inner (perimeter)', pocket: 'Inner (clearing)', online: 'On the line', off: 'Off' };
 const TINY = 0.01; // mm²
+const EPS = 1e-4;
+const CHAMFER_OUT = 0.25; // mm: a chamfering V-bit's tip runs this far outside the edge (as ncCAM)
 // Shapes that only touch along an edge (a drawing's blocks side by side)
 // stay separate in a union: grown and shrunk by 10 µm they join
 const joined = (loops) => C.cleanLoops(C.offset(C.offset(C.union(loops), 0.01), -0.01), TINY);
@@ -333,10 +337,130 @@ export function plan2d(a, tools, job, limits = {}) {
     op.enabled = !job.disabled?.[op.id];
     op.feeds = feeds(op.tool, job.material, job.finish, limits);
   }
+
+  // Add Chamfer to top surfaces (ncCAM's option): a V-bit along the top
+  // edge of each flat face the cuts made, last
+  if (job.chamfer?.size > 0) {
+    const op = chamfer2d({ a, job, tools, stock, ops, warnings, L });
+    if (op) {
+      op.enabled = !job.disabled?.[op.id];
+      op.feeds = feeds({ ...op.tool, diameter: Math.min(op.tool.diameter, 2 * (op.size + CHAMFER_OUT)) }, job.material, job.finish, limits);
+      ops.push(op);
+    }
+  }
   // A through cut-out without tabs at its last pass lets the part move
   const tabbed = job.tabs.enabled ? job : { ...job, tabs: { ...job.tabs, enabled: false } };
   const analysis = { top: T, size: [a.size[0], a.size[1], T] };
   return { analysis, stock, zero: zeroPoint(stock, job.zero), ops, warnings, job: tabbed };
+}
+
+// The chamfer option on a 2D plan: ncCAM's chamferPass, with the part's
+// levels (mesh2d) for the model's slices. Only edges a cut made: the
+// board's own edge isn't chamfered. Scrap that stands (the stock past a
+// cut-out's slot, a window's middle) is kept clear of the cone.
+function chamfer2d({ job, tools, stock, ops, warnings, L }) {
+  const w = job.chamfer.size, which = job.chamfer.edges || 'all';
+  const T = stock.top;
+  const vbits = tools.filter((t) => (t.kind === 'vbit' || t.kind === 'chamfer') && t.angle > 0 && t.angle < 180);
+  const half = (t) => (t.angle * Math.PI) / 360;
+  const vFits = (t) => t.diameter / 2 >= w + CHAMFER_OUT + 0.1 && (!t.fluteLength || t.fluteLength >= (w + CHAMFER_OUT) / Math.tan(half(t)) - 1e-6);
+  const picked = tools.find((t) => t.id === job.toolOverride?.chamfer && vbits.includes(t));
+  // A 90° bit makes the usual 45° chamfer; else the angle nearest to it
+  const tool = picked || vbits.filter(vFits).sort((x, y) => Math.abs(x.angle - 90) - Math.abs(y.angle - 90) || x.diameter - y.diameter)[0];
+  if (!tool) { warnings.push({ kind: 'chamfer', text: vbits.length ? `No V-bit in your Tool Library is wide enough for a ${L(w)} chamfer.` : 'Adding a chamfer to top surfaces needs a V-bit in your Tool Library.' }); return null; }
+  const depth = (w + CHAMFER_OUT) / Math.tan(half(tool));
+
+  const p = { stock, ops };
+  const levels = partLevels(p);
+  const swept = sweptArea(p);
+  if (!swept.length) { warnings.push({ kind: 'chamfer', text: 'No cut makes an edge to chamfer.' }); return null; }
+  const rectLoop = [[stock.minX, stock.minY], [stock.maxX, stock.minY], [stock.maxX, stock.maxY], [stock.minX, stock.maxY]];
+  const part = C.union(levels.flatMap((l) => l.region));
+  const standing = C.cleanLoops(C.difference(C.difference([rectLoop], swept), part), TINY);
+  // Material at height h: the part's levels above it, the scrap, and the
+  // floors of cuts that stop above it (a slot cut part way down)
+  const partial = ops.filter((o) => o.enabled !== false && o.zBottom > 0 && o.kind !== 'online');
+  const section = (h) => C.union([...levels.filter((l) => l.z > h).flatMap((l) => l.region), ...(T > h ? standing : []),
+    ...partial.filter((o) => o.zBottom > h).flatMap((o) => (o.kind === 'cutout' ? C.difference(C.offset(o.region, o.tool.diameter), o.region) : o.kind === 'inside' ? C.difference(o.loops, C.offset(o.loops, -o.tool.diameter)) : o.region))]);
+  // Each tab, as far as the cone (tr wide) can reach it, on the cut-outs and
+  // the windows cut with tabs
+  const tabTop = job.tabs.height ?? tabDefaults(job.material).height;
+  const bridge = job.tabs.length ?? tabDefaults(job.material).length;
+  const tabZones = (tr) => {
+    if (!job.tabs.enabled) return [];
+    const spots = [];
+    for (const o of ops) {
+      if (o.enabled === false || !o.tabs || o.zBottom > 0) continue;
+      const r = o.tool.diameter / 2;
+      const at = o.kind === 'cutout' ? tabSpots(o.region, r, job) : o.kind === 'inside' ? insideTabSpots(o.loops, r, job) : [];
+      for (const q of at) spots.push({ q, rad: bridge / 2 + r + tr + 0.5 });
+    }
+    return spots.map(({ q: [x, y], rad }) => Array.from({ length: 24 }, (_, i) => [x + rad * Math.cos((i * Math.PI) / 12), y + rad * Math.sin((i * Math.PI) / 12)]));
+  };
+  // Only where a cut made the edge: the swept area, a little grown
+  const keep = C.offset(swept, 0.05);
+  const tr = tool.diameter / 2, R = w + CHAMFER_OUT;
+  let skipped = false, lifted = false;
+  const passes = [];
+  const tops = [...new Set(levels.map((l) => l.z))].filter((z) => z > EPS).sort((x, y) => y - x);
+  for (const z of tops) {
+    const zTip = z - depth;
+    if (zTip < -job.throughDepth + 0.1) { skipped = true; continue; } // into the spoilboard
+    const lo = C.cleanLoops(C.union(levels.filter((l) => l.z >= z - EPS).flatMap((l) => l.region)), TINY);
+    if (!lo.length) continue;
+    const hi = z < T - EPS ? section(z + EPS) : [];
+    const under = C.cleanLoops(C.difference(section(Math.max(zTip, EPS) + EPS), C.offset(lo, 0.01)), TINY);
+    const overTabs = job.tabs.enabled && zTip <= Math.max(EPS, tabTop + 0.2);
+    const lifts = overTabs ? tabZones(tr) : [];
+    // Scrap is no taller than the stock: the cone is only this wide up there
+    const atTop = Math.min(tr, (T - zTip) * Math.tan(half(tool)));
+    const bad = C.union([...(z < T - EPS ? C.offset(hi, tr + 0.1) : []), ...C.offset(standing, atTop + 0.1), ...C.offset(under, R + 0.1), ...lifts]);
+    const loops = [];
+    for (const [outer, ...holes] of C.regions(C.offsetMiter(lo, CHAMFER_OUT))) {
+      if (which !== 'inside') loops.push(outer);
+      if (which !== 'outside') loops.push(...holes);
+    }
+    // Only loops with something to cut: a stretch of 0.5 mm clear of `bad`
+    const inBad = (q) => !inArea(q, keep) || inArea(q, bad);
+    const cuts = loops.filter((l) => {
+      let run = 0;
+      for (let i = 0; i < l.length; i++) {
+        const p0 = l[i], p1 = l[(i + 1) % l.length], len2 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), k = Math.max(1, Math.ceil(len2 / 0.25));
+        for (let j = 0; j < k; j++) {
+          if (inBad([p0[0] + ((p1[0] - p0[0]) * j) / k, p0[1] + ((p1[1] - p0[1]) * j) / k])) run = 0;
+          else if ((run += len2 / k) >= 0.5) return true;
+        }
+      }
+      return false;
+    });
+    if (!cuts.length) continue;
+    passes.push({ z, depth, loops: cuts, bad, keep });
+    if (overTabs && lifts.length && which !== 'inside') lifted = true;
+  }
+  if (skipped) warnings.push({ kind: 'chamfer', text: `Some edges are too low to chamfer ${L(w)} without cutting the spoilboard.` });
+  if (!passes.length) { warnings.push({ kind: 'chamfer', text: `No edge can take a ${L(w)} chamfer with ${tool.name}.` }); return null; }
+  if (lifted) warnings.push({ kind: 'chamfer', text: 'The chamfer lifts over the tabs: sand those spots after breaking the part free.' });
+  return { id: 'chamfer', kind: 'chamfer', label: 'Add Chamfer to top surfaces', tool, zTop: T, zBottom: Math.min(...passes.map((l) => l.z - l.depth)), region: C.union(levels.flatMap((l) => l.region)), levels: passes, show: passes.map((l) => ({ z: l.z, loops: l.loops })), size: w, angle: tool.angle / 2, detail: `${L(w)} wide \u00b7 ${Math.round(tool.angle)}\u00b0 bit \u00b7 ${{ all: 'all edges', outside: 'outside edges', inside: 'pockets and holes' }[which]}` };
+}
+
+// Where insideProfile puts its tabs: on each loop's tool path (inside by r,
+// counter-clockwise), spread as makeTabs spreads them
+function insideTabSpots(loops, r, job) {
+  const count = Math.max(0, Math.round(job.tabs.count));
+  const out = [];
+  for (const l of loops) {
+    for (const pts of C.simplify(C.cleanLoops(C.offset([ccw(l)], -r), 0.001), 0.005).filter((x) => C.loopArea(x) > 0)) {
+      const lens = pts.map((q, i) => Math.hypot(pts[(i + 1) % pts.length][0] - q[0], pts[(i + 1) % pts.length][1] - q[1]));
+      const total = lens.reduce((x, y) => x + y, 0);
+      for (let k = 0; k < count; k++) {
+        let d = ((k + 0.5) / count) * total, i = 0;
+        while (i < pts.length - 1 && d > lens[i]) d -= lens[i++];
+        const q0 = pts[i], q1 = pts[(i + 1) % pts.length], f = lens[i] ? d / lens[i] : 0;
+        out.push([q0[0] + (q1[0] - q0[0]) * f, q0[1] + (q1[1] - q0[1]) * f]);
+      }
+    }
+  }
+  return out;
 }
 
 // Shape j inside closed shape i

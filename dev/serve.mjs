@@ -7,6 +7,7 @@ import { LIBRARY } from '../tests/helpers.js';
 const port = +(process.argv[2] || 8777);
 const json = (res, v) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(v)); };
 const saved = new Map();
+let prefs = {};
 createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
@@ -22,6 +23,14 @@ createServer((req, res) => {
   if (p === '/api/tools') return json(res, process.env.TOOLS ? JSON.parse(readFileSync(process.env.TOOLS, 'utf8')) : LIBRARY);
   if (p === '/api/firmware') return json(res, { settings: { 30: { value: '24000' }, 110: { value: '5000' }, 111: { value: '5000' }, 130: { value: '800' }, 131: { value: '800' }, 132: { value: '150' } } });
   if (p === '/api/server-state') return json(res, { machineState: { connected: true, tool: 1 } });
+  // The plugin's settings (kept for the server's run)
+  if (p === '/api/plugins/com.tmuka.nccut2d/settings') {
+    if (req.method !== 'PUT') return json(res, prefs);
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => { prefs = JSON.parse(body); console.log('settings', body); json(res, { success: true }); });
+    return;
+  }
   if (p === '/api/gcode-files') return json(res, { tree: [{ type: 'folder', path: 'ncCAM', children: [...saved.keys()].map((k) => ({ type: 'file', path: k })) }] });
   if (p === '/api/gcode-files/file') { if (saved.has(url.searchParams.get('path'))) return json(res, {}); res.writeHead(404); return res.end(); }
   if (p === '/api/gcode-files/load-temp' || p === '/api/gcode-files/file/save') {

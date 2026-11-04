@@ -216,3 +216,32 @@ test('resizing keeps tabs off partial cuts; counterbore steps fit thin stock; a 
   assert.ok(cut.moves.filter((m) => !m.r).every((m) => m.z >= 1 - 1e-6 && (m.z <= 1 + 1e-6 || m.z > 2.5 || Math.abs(m.z - 6) < 1e-6 || m.z > 1)), 'no tab lifts');
   assert.ok(!cut.moves.some((m) => !m.r && Math.abs(m.z - 2) < 1e-6), 'no lifts to a tab top');
 });
+
+test('Add Chamfer to top surfaces: the cut edges, after the cut-out, never the board\'s edge', async () => {
+  const { a, p } = run(sample(), (j) => ({ ...j, chamfer: { size: 1, edges: 'all' } }));
+  const ch = p.ops.at(-1);
+  assert.equal(ch.kind, 'chamfer');
+  assert.equal(ch.tool.kind, 'vbit');
+  // Top edges: the plate, the hole, the pocket's rim; the pocket floor's boss
+  const top = ch.levels.find((l) => Math.abs(l.z - 6) < 1e-6);
+  assert.ok(top && top.loops.length >= 3, `top loops ${top?.loops.length}`);
+  // The V-bit's tip 0.25 mm past the edge, as deep as the chamfer
+  const deg60 = Math.tan(Math.PI / 6);
+  assert.ok(Math.abs(top.depth - 1.25 / deg60) < 1e-6);
+  const sim = N.simulate(p, 0.25);
+  assert.equal(sim.collisions.length, 0);
+  // Only pockets and holes: no loop round the plate's outside
+  const { p: q } = run(sample(), (j) => ({ ...j, chamfer: { size: 1, edges: 'inside' } }));
+  const big = (l) => Math.abs(l.reduce((s, pt, i) => s + pt[0] * l[(i + 1) % l.length][1] - l[(i + 1) % l.length][0] * pt[1], 0)) / 2;
+  assert.ok(q.ops.at(-1).levels.every((l) => l.loops.every((x) => big(x) < 100 * 60)));
+  // Pockets alone (nothing cut out): the board's own edge isn't chamfered
+  const { p: r } = run(sample(), (j) => ({ ...j, layers: { PART: { cut: 'off' }, LINE: { cut: 'off' } }, chamfer: { size: 1, edges: 'all' } }));
+  const rc = r.ops.find((o) => o.kind === 'chamfer');
+  assert.ok(rc, r.warnings.map((w) => w.text).join(' | '));
+  assert.ok(rc.levels.every((l) => l.loops.every((x) => big(x) < 31 * 21 + 20)), 'only the pocket and its boss');
+  // No V-bit: a note, no op
+  const a2 = N.analyze2d(sample());
+  const p2 = N.plan2d(a2, tools.filter((t) => t.kind !== 'vbit'), { ...N.defaultJob(a2, 6), chamfer: { size: 1 } });
+  assert.ok(!p2.ops.some((o) => o.kind === 'chamfer'));
+  assert.ok(p2.warnings.some((w) => /needs a V-bit/.test(w.text)));
+});

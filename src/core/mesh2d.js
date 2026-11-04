@@ -4,9 +4,25 @@
 import { ShapeUtils, Vector2 } from 'three';
 import * as C from './clip.js';
 
+// Point q inside an area of many loops (Clipper's: outer loops
+// counter-clockwise, holes clockwise). C.pointInRegion takes one region.
+export function inArea(q, loops) {
+  let w = 0;
+  for (const l of loops) if (C.pointInLoop(q, l)) w += C.loopArea(l) > 0 ? 1 : -1;
+  return w > 0;
+}
+
 export function partMesh2d(p) {
+  const levels = partLevels(p);
+  return meshOf(levels);
+}
+
+// The part as flat levels: { z, region } (the top at the stock's
+// thickness, each floor at its height; through cuts aren't in any).
+// Chamfers are left out: `ops` defaults to the plan's ops besides them.
+export function partLevels(p, ops = p.ops.filter((o) => o.kind !== 'chamfer')) {
   const T = p.stock.top;
-  const ops = p.ops.filter((o) => o.enabled !== false);
+  ops = ops.filter((o) => o.enabled !== false);
   const cutouts = ops.filter((o) => o.kind === 'cutout');
   // The part: what the outside cuts go round, else the whole stock
   const F = cutouts.length ? C.union(cutouts.flatMap((o) => o.region)) : [[[p.stock.minX, p.stock.minY], [p.stock.maxX, p.stock.minY], [p.stock.maxX, p.stock.maxY], [p.stock.minX, p.stock.maxY]]];
@@ -32,12 +48,29 @@ export function partMesh2d(p) {
   // Parts cut out of a window stand in it: their own area, less the cuts
   // inside them (not the window round them)
   const inner = C.union(cutouts.filter((o) => o.inner).flatMap((o) => o.region));
-  const innerCuts = inner.length ? C.union([...byZ.values()].flat().filter((l) => C.pointInRegion(l[0], inner))) : [];
+  const innerCuts = inner.length ? C.union([...byZ.values()].flat().filter((l) => inArea(l[0], inner))) : [];
   const top = C.cleanLoops(C.union([...C.difference(F, deeper), ...C.difference(inner, innerCuts)]), 0.01);
   levels.push({ z: T, region: top });
+  return levels;
+}
 
+// What the bits sweep (seen from the top): cut-out slots, inside rings or
+// whole insides (through), pockets. Lines aren't in it (nor in the part).
+export function sweptArea(p) {
+  const area = [];
+  for (const o of p.ops) {
+    if (o.enabled === false) continue;
+    const d = o.tool.diameter;
+    if (o.kind === 'cutout') area.push(...C.difference(C.offset(o.region, d), o.region));
+    else if (o.kind === 'inside') area.push(...C.difference(o.loops, C.offset(o.loops, -d)));
+    else if (o.kind === 'pocket') area.push(...o.region);
+  }
+  return C.union(area);
+}
+
+function meshOf(levels) {
   const heightAt = (q) => {
-    for (const lv of levels) if (C.pointInRegion(q, lv.region)) return lv.z;
+    for (const lv of levels) if (inArea(q, lv.region)) return lv.z;
     return 0; // through, or outside the part
   };
   const pos = [], idx = [];
@@ -59,7 +92,7 @@ export function partMesh2d(p) {
           if (L < 1e-9) continue;
           const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, ux = dy / L * 0.05, uy = -dx / L * 0.05;
           // The side away from this level's area
-          const out = C.pointInRegion([mx + ux, my + uy], lv.region) ? [mx - ux, my - uy] : [mx + ux, my + uy];
+          const out = inArea([mx + ux, my + uy], lv.region) ? [mx - ux, my - uy] : [mx + ux, my + uy];
           const low = heightAt(out);
           if (low >= lv.z - 1e-6) continue;
           const i0 = vert(a[0], a[1], lv.z), i1 = vert(b[0], b[1], lv.z), i2 = vert(b[0], b[1], low), i3 = vert(a[0], a[1], low);
