@@ -1,0 +1,21 @@
+{
+  "name": "ncsender-plugin-nccut2d",
+  "version": "0.1.0",
+  "description": "ncSender ncCut2D plugin \u2014 DXF, SVG, PDF and Illustrator drawings to CNC router G-code",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test tests/*.test.js"
+  },
+  "author": "tmuka",
+  "license": "GPL-3.0",
+  "devDependencies": {
+    "clipper-lib": "^6.4.2",
+    "dxf-parser": "^1.1.2",
+    "esbuild": "^0.28.2",
+    "pdfjs-dist": "^4.10.38",
+    "playwright-core": "^1.64.1",
+    "three": "^0.186.1"
+  }
+}

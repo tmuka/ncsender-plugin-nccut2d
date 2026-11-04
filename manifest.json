@@ -1,0 +1,28 @@
+{
+  "id": "com.tmuka.nccut2d",
+  "name": "ncCut2D",
+  "version": "0.0.1",
+  "minAppVersion": "2.0.88",
+  "configUi": "config.html",
+  "author": "tmuka",
+  "description": "Turns a 2D drawing (DXF, SVG, PDF or Illustrator) into router G-code: pick what to cut outside, inside, on the line or as a pocket, with the stock thickness and cut depths; end mills from your Tool Library, speeds and feeds for the material, tabs, and a preview of the cut. Built from ncCAM and ncLaser.",
+  "category": "gcode-generator",
+  "repository": "https://github.com/tmuka/ncsender-plugin-nccut2d",
+  "icon": "logo.png",
+  "platforms": {
+    "v2": "2.0.88",
+    "pro-v2": "2.0.149"
+  },
+  "events": [],
+  "permissions": [
+    "gcode.modify"
+  ],
+  "toolMenu": [
+    {
+      "id": "open-config",
+      "label": "ncCut2D",
+      "icon": "logo.png",
+      "clientOnly": true
+    }
+  ]
+}

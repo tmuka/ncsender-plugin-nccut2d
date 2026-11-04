@@ -1,0 +1,37 @@
+// Drives the harness in headless Chrome and saves screenshots to dist/shots.
+// node dev/ui-run.mjs [fixture] (needs dev/serve.mjs running)
+import { chromium } from 'playwright-core';
+const exe = `${process.env.HOME}/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`;
+const fixture = process.argv[2] || 'bracket.step';
+const browser = await chromium.launch({ executablePath: exe, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+const [vw, vh] = (process.env.VIEW || '1920x1080').split('x').map(Number);
+const page = await browser.newPage({ viewport: { width: vw, height: vh } });
+const pre = process.env.PREFIX || '';
+page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') console.log('console', m.type(), m.text()); });
+page.on('pageerror', (e) => console.log('pageerror', e.message));
+await page.goto('http://localhost:8777/');
+await page.waitForSelector('[data-file]', { state: 'attached', timeout: 20000 });
+if (process.env.LIGHT) await page.evaluate(() => document.documentElement.classList.add('light'));
+await page.screenshot({ path: `dist/shots/${pre}1-empty.png` });
+await page.evaluate((f) => window.dropFixture(f), fixture);
+await page.waitForFunction(() => document.querySelector('.ncc-found .ncc-row'), null, { timeout: 60000 });
+await page.waitForTimeout(800);
+await page.screenshot({ path: `dist/shots/${pre}2-model.png` });
+await page.click('.ncc-foot [data-go="2"]');
+await page.waitForTimeout(500);
+await page.screenshot({ path: `dist/shots/${pre}3-stock.png` });
+await page.click('.ncc-foot [data-go="3"]');
+await page.waitForTimeout(800);
+await page.screenshot({ path: `dist/shots/${pre}4-ops.png` });
+await page.click('.ncc-foot [data-go="4"]');
+await page.waitForFunction(() => document.querySelector('.ncc-check'), null, { timeout: 60000 });
+await page.waitForTimeout(6000);
+await page.screenshot({ path: `dist/shots/${pre}5-preview.png` });
+await page.waitForTimeout(+(process.env.WAIT || 40000));
+await page.screenshot({ path: `dist/shots/${pre}6-preview-end.png` });
+const checks = await page.$$eval('.ncc-check', (els) => els.map((e) => e.textContent));
+console.log('checks', checks);
+await page.click('[data-act="load"]');
+await page.waitForTimeout(800);
+console.log('dialog content after load:', (await page.$eval('#content', (e) => e.innerHTML.length)));
+await browser.close();

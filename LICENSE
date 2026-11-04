@@ -1,0 +1,8 @@
+ncCut2D is licensed under the GNU General Public License v3.0 (see LICENSE-GPL-3.0).
+
+It is built from two ncSender plugins by siganberg, used under their GPL-3.0 option:
+- ncCAM (https://github.com/siganberg/ncsender-plugin-nccam), Copyright (c) 2024 ncSender
+- ncLaser (https://github.com/siganberg/ncsender-plugin-nclaser), Copyright (c) 2024 ncSender
+
+Those plugins are also offered under a commercial license by ncSender; that option
+belongs to ncSender and does not extend to ncCut2D.
