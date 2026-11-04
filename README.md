@@ -1,15 +1,19 @@
 # ncCut2D
 
-An ncSender plugin that turns a 2D drawing into CNC router G-code. **Work in progress:**
-the core (reading drawings, planning, toolpaths, simulation, G-code) works and is tested;
-the dialog is being built. See [docs/PLAN.md](docs/PLAN.md).
+An ncSender plugin that turns a 2D drawing into CNC router G-code. The plan and what's
+next: [docs/PLAN.md](docs/PLAN.md).
 
 1. **Drawing**: open a DXF, SVG, PDF or Illustrator (.ai) file drawn to size.
 2. **Choose cuts**: per colour layer, or per shape, pick **Outside** (the part, with tabs),
    **Inside** (a hole or window), **On the line** (a groove, open lines too), **Pocket**
    (clear inside, down to a depth) or **Off**; the stock's thickness and each cut's depth.
 3. **Stock & tools**: material, stock size, zero, tabs; end mills from the Tool Library.
-4. **Preview & Load**: the cut plays on a model of the stock; load into ncSender.
+4. **Preview & Load**: the cut plays on a model of the stock; load into ncSender, and with
+   the **Save to File Manager** switch on (remembered), also save it to File Manager › ncCut2D.
+
+Size fields take any unit: `1/4"`, `6mm`, `1-1/2 in`, `12mm+1/4"`, shown in your machine's units
+([ncsender-unit-input](https://github.com/tmuka/ncsender-unit-input)). **Add Chamfer to top
+surfaces** (from ncCAM) runs a V-bit along the top edges the cuts leave.
 
 ## Where it comes from
 
