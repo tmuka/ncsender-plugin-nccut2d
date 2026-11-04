@@ -1042,8 +1042,12 @@ export function mountApp(root, host, engine) {
 
   root.addEventListener('change', (e) => {
     const t = e.target;
-    // Committed: leaving the field now doesn't commit it again
-    if (t.matches('input[data-unit]')) t.defaultValue = t.value;
+    // A unit field commits each value once: Enter commits it, then the
+    // browser's own change event can follow before the dialog redraws
+    if (t.matches('input[data-unit]')) {
+      if (t.dataset.done === t.value) return;
+      t.dataset.done = t.defaultValue = t.value;
+    }
     if (t.matches('[data-file]')) return openFile(t.files[0]);
     if (t.matches('[data-recent]')) return t.value && openRecent(t.value);
     if (t.dataset.tool) { S.job.toolOverride[t.dataset.tool] = +t.value || t.value; return changed(); }
