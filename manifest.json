@@ -5,7 +5,7 @@
   "minAppVersion": "2.0.88",
   "configUi": "config.html",
   "author": "tmuka",
-  "description": "Turns a 2D drawing (DXF, SVG, PDF or Illustrator) into router G-code: pick what to cut outside, inside, on the line or as a pocket, with the stock thickness and cut depths; end mills from your Tool Library, speeds and feeds for the material, tabs, and a preview of the cut. Built from ncCAM and ncLaser.",
+  "description": "Turns a 2D drawing (DXF, SVG, PDF or Illustrator) into router G-code. Pick outside (with tabs), inside, on the line or pocket per colour or shape. End mills come from your Tool Library, with speeds and feeds for the material. Optional V-bit chamfer on top edges. Size fields take any unit. Preview the cut with a collision check, then load it into ncSender or save it to File Manager.",
   "category": "gcode-generator",
   "repository": "https://github.com/tmuka/ncsender-plugin-nccut2d",
   "icon": "logo.png",

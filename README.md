@@ -1,19 +1,39 @@
 # ncCut2D
 
-An ncSender plugin that turns a 2D drawing into CNC router G-code. The plan and what's
-next: [docs/PLAN.md](docs/PLAN.md).
+Turns a 2D drawing into CNC router G-code, inside ncSender.
 
-1. **Drawing**: open a DXF, SVG, PDF or Illustrator (.ai) file drawn to size.
-2. **Choose cuts**: per colour layer, or per shape, pick **Outside** (the part, with tabs),
-   **Inside** (a hole or window), **On the line** (a groove, open lines too), **Pocket**
-   (clear inside, down to a depth) or **Off**; the stock's thickness and each cut's depth.
-3. **Stock & tools**: material, stock size, zero, tabs; end mills from the Tool Library.
-4. **Preview & Load**: the cut plays on a model of the stock; load into ncSender, and with
-   the **Save to File Manager** switch on (remembered), also save it to File Manager › ncCut2D.
+- **Opens** DXF, SVG, PDF and Illustrator (.ai) files drawn to size.
+- **Cuts** outside (with tabs), inside, on the line, or as a pocket, chosen per colour layer or per shape.
+- **Tools and feeds** come from your Tool Library, with speeds and feeds for the material.
+- **Chamfers** the top edges with a V-bit, if you want.
+- **Size fields take any unit:** `1/4"`, `6mm`, `12mm+1/4"`.
+- **Previews** the cut on a model of the stock and checks it for collisions.
+- **Loads** the program into ncSender, and can also save it to File Manager.
+- **Remembers** your recent drawings and their settings.
 
-Size fields take any unit: `1/4"`, `6mm`, `1-1/2 in`, `12mm+1/4"`, shown in your machine's units
-([ncsender-unit-input](https://github.com/tmuka/ncsender-unit-input)). **Add Chamfer to top
-surfaces** (from ncCAM) runs a V-bit along the top edges the cuts leave.
+## How it works
+
+1. **Drawing**: open the file and set the stock's thickness. Under **What to cut**, choose a cut for each colour layer or shape (click shapes to pick them):
+   - **Outside**: the part, with tabs.
+   - **Inside**: a hole or window.
+   - **On the line**: a groove; open lines too.
+   - **Pocket**: cleared to a depth.
+   - **Off**.
+2. **Stock & Zero**:
+   - the material;
+   - the stock size, or **Size the stock to the drawing**;
+   - tabs: how many, how thick and how long;
+   - **Where is zero?** Tap one of nine points, then choose Z0 on top of the stock or on the bed.
+3. **Operations**:
+   - the finish;
+   - the tools for this job;
+   - each operation, which you can switch off or give a different tool;
+   - **Add Chamfer to top surfaces**.
+4. **Preview & Load**: the cut plays on the stock, with a collision check. **Load into ncSender**. While the remembered **Save to File Manager** switch is on, Load also saves the program to File Manager › ncCut2D.
+
+Size fields show your machine's units. You can type another unit, a fraction or a sum, and it's converted when you leave the field: `1/4"`, `6mm`, `1-1/2 in`, `1,5mm`, `12mm+1/4"`. Up and Down step the value (Shift ×10, Alt ×0.1). This uses [ncsender-unit-input](https://github.com/tmuka/ncsender-unit-input).
+
+The plan and what's next: [docs/PLAN.md](docs/PLAN.md).
 
 ## Where it comes from
 
