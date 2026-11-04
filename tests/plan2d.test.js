@@ -54,8 +54,9 @@ test('defaults: line, inside, outside in that order; through cuts reach the brea
   assert.equal(N.simulate(p, 0.5).collisions.length, 0);
 });
 
-test('pocket: the rectangle cleared 3 mm deep around its boss, which stands', () => {
-  const { a, p } = run(sample(), (j) => ({ ...j, layers: { POCKET: { cut: 'pocket' } } }));
+test('pocket: the rectangle cleared 3 mm deep around its boss, which stands (not cut out)', () => {
+  // The boss shares the pocket's layer: its own choice keeps it standing
+  const { a, p } = run(sample(), (j) => ({ ...j, layers: { POCKET: { cut: 'pocket' } }, shapes: { 3: { cut: 'outside' } } }));
   const op = p.ops.find((o) => o.kind === 'pocket');
   assert.ok(op, 'a pocket');
   assert.equal(op.zBottom, 3);
@@ -107,4 +108,20 @@ test('G-code: one program with every op', () => {
   const g = N.gcode(p);
   assert.ok(/M3|M03/.test(g) && /M30|M2\b/.test(g));
   assert.ok(g.split('\n').length > 50);
+});
+
+test('counterbores: concentric circles are a stepped hole, the innermost through', async () => {
+  // A plate with a Ø12.5 / Ø8.5 / Ø5 stack, and a line drawn there and back (no area)
+  const shapes = N.readDxf(dxf({ entities: [lwpoly('0', [[0, 0], [60, 0], [60, 40], [0, 40]], true), circle('0', 30, 20, 6.25), circle('0', 30, 20, 4.25), circle('0', 30, 20, 2.5), lwpoly('0', [[50, 0], [50, 40]], true)] })).shapes;
+  const a = N.analyze2d(shapes);
+  assert.deepEqual(a.shapes.map((_, i) => N.defaultCut(a, i)), ['outside', 'pocket', 'pocket', 'inside', 'online']);
+  const job = N.defaultJob(a, 10);
+  assert.deepEqual([1, 2].map((i) => N.choiceFor(a, job, i).depth), [3, 6]);
+  const p = N.toolpaths(N.plan2d(a, N.normalizeTools([...LIBRARY, { id: 9, toolId: 9, name: '3 mm end mill', type: 'flat', diameter: 3, dimensions: { flute_length: 15 } }]), job));
+  const { hm } = N.simulate(p, 0.1);
+  const at = (x, y) => hm.h[Math.floor((y - hm.y0) / hm.cell) * hm.nx + Math.floor((x - hm.x0) / hm.cell)];
+  assert.ok(Math.abs(at(30 + 5.5, 20) - 7) < 0.05, `outer step ${at(35.5, 20)}`);
+  assert.ok(Math.abs(at(30 + 3.5, 20) - 4) < 0.05, `inner step ${at(33.5, 20)}`);
+  assert.ok(at(30 + 1.5, 20) < 0, `through ${at(31.5, 20)}`);
+  assert.ok(at(30 + 6.6, 20) > 9.9, 'not past the counterbore');
 });

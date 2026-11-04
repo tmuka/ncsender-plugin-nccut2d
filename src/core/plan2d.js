@@ -6,8 +6,8 @@
 //   'outside' the tool outside the line (the part is what's inside), tabs
 //   'inside'  the tool inside the line (a hole or a window)
 //   'online'  the tool's centre on the line (a groove; open lines too)
-//   'pocket'  clears what's inside the line, down to depth (shapes inside
-//             stand as islands: pockets in pockets alternate, even-odd)
+//   'pocket'  clears what's inside the line, down to depth; Outside shapes
+//             inside it stand as islands (bosses)
 //   'off'
 // and depth is in mm, or null for through (the stock and the break-through).
 import * as C from './clip.js';
@@ -33,7 +33,8 @@ export function analyze2d(shapes) {
   const minX = Math.min(...all.map((p) => p[0])), minY = Math.min(...all.map((p) => p[1]));
   const maxX = Math.max(...all.map((p) => p[0])), maxY = Math.max(...all.map((p) => p[1]));
   const moved = shapes.map((s) => ({ ...s, pts: s.pts.map(([x, y]) => [x - minX, y - minY]) }));
-  const loops = moved.map((s) => (s.closed && s.pts.length > 2 ? ccw(ring(s.pts)) : null));
+  // A "closed" shape with no area (a line drawn there and back) is a line
+  const loops = moved.map((s) => (s.closed && s.pts.length > 2 && Math.abs(C.loopArea(ring(s.pts))) > TINY ? ccw(ring(s.pts)) : null));
   const areas = loops.map((l) => (l ? C.loopArea(l) : 0));
   // Each shape's holder: the smallest closed shape around its first point
   const nest = moved.map((s, i) => {
@@ -46,15 +47,44 @@ export function analyze2d(shapes) {
     });
     return { parent, depth };
   });
-  return { shapes: moved, loops, areas, nest, size: [maxX - minX, maxY - minY] };
+  // Circles sharing a centre with the one around them: a stepped hole
+  // (counterbore). step: 0 for the outermost of a stack, 1, 2... inward;
+  // last: nothing concentric inside it
+  const circ = loops.map((l) => (l ? asCircle(l) : null));
+  const sameCentre = (i, j) => circ[i] && circ[j] && Math.hypot(circ[i].x - circ[j].x, circ[i].y - circ[j].y) < 0.05;
+  nest.forEach((n, i) => {
+    n.step = null;
+    if (!circ[i]) return;
+    let k = 0;
+    for (let j = n.parent; j >= 0 && sameCentre(i, j); j = nest[j].parent) k++;
+    const inner = nest.some((m, j) => m.parent === i && sameCentre(i, j));
+    if (k || inner) { n.step = k; n.last = !inner; }
+  });
+  return { shapes: moved, loops, areas, nest, circles: circ, size: [maxX - minX, maxY - minY] };
+}
+
+// A loop's circle (centre, radius) when every point is within 1% of it
+function asCircle(l) {
+  if (l.length < 12) return null;
+  const x = l.reduce((t, p) => t + p[0], 0) / l.length, y = l.reduce((t, p) => t + p[1], 0) / l.length;
+  const d = l.map((p) => Math.hypot(p[0] - x, p[1] - y)), r = d.reduce((t, v) => t + v, 0) / d.length;
+  // And its area a circle's: a rounded rectangle's points sit only at its
+  // corners, all about as far from the middle
+  if (!(r > 0 && d.every((v) => Math.abs(v - r) <= Math.max(0.01 * r, 0.02)))) return null;
+  return Math.abs(Math.abs(C.loopArea(l)) - Math.PI * r * r) <= 0.03 * Math.PI * r * r ? { x, y, r } : null;
 }
 
 // What a shape gets until the user says otherwise: an open line is cut on
 // the line; a closed one inside nothing (or inside a hole) is a part, cut
 // outside; inside a part, a hole, cut inside.
+// Circles in a stack (a counterbore): pockets, each deeper, the
+// innermost through (inside).
 export function defaultCut(a, i) {
   if (!a.loops[i]) return 'online';
-  return a.nest[i].depth % 2 ? 'inside' : 'outside';
+  const n = a.nest[i];
+  if (n.step !== null && n.step !== undefined) return n.last ? 'inside' : 'pocket';
+  // Inside a counterbore's circle that isn't concentric: as inside its holder
+  return n.depth % 2 ? 'inside' : 'outside';
 }
 
 export function defaultJob(a, thickness = 6) {
@@ -76,7 +106,8 @@ export function choiceFor(a, job, i) {
   const s = a.shapes[i];
   const own = job.shapes?.[i], layer = job.layers?.[s.layer ?? s.color];
   const cut = own?.cut || layer?.cut || defaultCut(a, i);
-  const depth = own?.depth !== undefined ? own.depth : layer?.depth !== undefined ? layer.depth : cut === 'pocket' || cut === 'online' ? job.depths[cut] : null;
+  const n = a.nest[i], stepped = cut === 'pocket' && n.step !== null && n.step !== undefined;
+  const depth = own?.depth !== undefined ? own.depth : layer?.depth !== undefined ? layer.depth : stepped ? job.depths.pocket * (n.step + 1) : cut === 'pocket' || cut === 'online' ? job.depths[cut] : null;
   return { cut: cut === 'online' || a.loops[i] ? cut : 'online', depth };
 }
 
@@ -124,6 +155,9 @@ export function plan2d(a, tools, job, limits = {}) {
     groups.get(k).idx.push(i);
   });
   const all = [...groups.values()];
+  const cutOf = a.shapes.map((_, i) => choiceFor(a, job, i).cut);
+  // An Outside shape inside a pocket is that pocket's island, not a part
+  const inPocket = (j) => { for (let k = a.nest[j].parent; k >= 0; k = a.nest[k].parent) if (cutOf[k] === 'pocket') return true; return false; };
   const of = (cut) => all.filter((g) => g.cut === cut).sort((x, y) => y.z - x.z);
   const coverage = (region, r) => C.area(C.offset(C.offset(region, -r), r)) / Math.max(C.area(region), TINY);
 
@@ -138,11 +172,9 @@ export function plan2d(a, tools, job, limits = {}) {
   // Pockets: each shape's inside, less the shapes inside it that aren't
   // pockets at this depth (islands); the largest end mill that clears most
   for (const g of of('pocket')) {
-    const mine = new Set(g.idx);
-    const islands = a.loops.map((l, j) => (l && !mine.has(j) && g.idx.some((i) => isInside(a, j, i)) ? l : null)).filter(Boolean);
-    // Pockets nested in pockets alternate (even-odd): a boss drawn inside
-    // one stands, as in most CAM
-    const region = C.cleanLoops(C.difference(C.unionEvenOdd(g.idx.map((i) => a.loops[i])), C.union(islands)), TINY);
+    // Shapes inside cut Outside stand as islands (a boss)
+    const islands = a.loops.map((l, j) => (l && cutOf[j] === 'outside' && g.idx.some((i) => isInside(a, j, i)) ? l : null)).filter(Boolean);
+    const region = C.cleanLoops(C.difference(C.union(g.idx.map((i) => a.loops[i])), C.union(islands)), TINY);
     if (!region.length) continue;
     const ok = flats.filter((t) => t.diameter <= maxD && fluteOk(t, deep(g.z)) && C.offset(region, -t.diameter / 2).length);
     if (!ok.length) { warnings.push({ kind: 'notool', text: `No end mill fits the pockets ${name(g.depth)}.` }); continue; }
@@ -159,23 +191,25 @@ export function plan2d(a, tools, job, limits = {}) {
   };
 
   // Inside: holes and windows, each loop on its own, before the outside
+  // One end mill for as many as it fits, then a smaller one for the rest
   for (const g of of('inside')) {
-    const loops = g.idx.map((i) => a.loops[i]);
-    let tool = profileTool(deep(g.z), (t) => loops.every((l) => C.offset([l], -t.diameter / 2).length));
-    let cut = loops;
-    if (!tool) {
-      // The largest that fits the most; the rest are left with a note
-      tool = profileTool(deep(g.z), (t) => loops.some((l) => C.offset([l], -t.diameter / 2).length));
-      if (!tool) { warnings.push({ kind: 'notool', text: `No end mill fits inside the ${g.idx.length > 1 ? `${g.idx.length} shapes` : 'shape'} cut ${name(g.depth)}.` }); continue; }
-      cut = loops.filter((l) => C.offset([l], -tool.diameter / 2).length);
-      warnings.push({ kind: 'notool', text: `${loops.length - cut.length} shape${loops.length - cut.length > 1 ? 's are' : ' is'} too small for ${tool.name} inside: left uncut.` });
+    let left = g.idx.map((i) => a.loops[i]);
+    const fits = (t, l) => C.offset([l], -t.diameter / 2).length > 0;
+    for (let n = 0; left.length; n++) {
+      const tool = profileTool(deep(g.z), (t) => left.every((l) => fits(t, l))) ||
+        flats.filter((t) => t.diameter <= maxD && fluteOk(t, deep(g.z)) && left.some((l) => fits(t, l))).sort((x, y) => left.filter((l) => fits(y, l)).length - left.filter((l) => fits(x, l)).length || y.diameter - x.diameter)[0];
+      if (!tool) { warnings.push({ kind: 'notool', text: `No end mill fits inside ${left.length > 1 ? `${left.length} shapes` : 'a shape'} cut ${name(g.depth)}: left uncut.` }); break; }
+      const cut = left.filter((l) => fits(tool, l));
+      left = left.filter((l) => !fits(tool, l));
+      ops.push({ id: `inside@${g.z}${n ? `#${n}` : ''}`, kind: 'inside', label: cut.length > 1 ? `Cut ${cut.length} shapes inside` : 'Cut inside the shape', tool: take(tool), zTop: T, zBottom: g.z, loops: cut, region: cut, tabs: false, detail: name(g.depth) });
     }
-    ops.push({ id: `inside@${g.z}`, kind: 'inside', label: cut.length > 1 ? `Cut ${cut.length} shapes inside` : 'Cut inside the shape', tool: take(tool), zTop: T, zBottom: g.z, loops: cut, region: cut, tabs: false, detail: name(g.depth) });
   }
 
   // Outside: the parts, with tabs when cut through
   for (const g of of('outside')) {
-    const region = C.cleanLoops(C.union(g.idx.map((i) => a.loops[i])), TINY);
+    const parts = g.idx.filter((i) => !inPocket(i));
+    if (!parts.length) continue;
+    const region = C.cleanLoops(C.union(parts.map((i) => a.loops[i])), TINY);
     const tool = profileTool(deep(g.z), () => true);
     if (!tool) { warnings.push({ kind: 'notool', text: `No end mill is long enough to cut out ${name(g.depth)} (${L(deep(g.z))}).` }); continue; }
     const through = g.z < 0;

@@ -20,6 +20,9 @@ const ENDMILL_TYPES = new Set(['flat', 'flat end mill', 'endmill', 'end mill', '
 
 export function toolKind(tool) {
   const t = String(tool.type || '').toLowerCase().replace(/[-_]/g, ' ');
+  // Shaped router bits the library files as flat (keyhole, roundover, cove,
+  // bowl): they cut a profile, not a wall or a floor
+  if (/keyhole|round ?over|\bcove\b|bowl|ogee|dovetail/i.test(tool.name || '')) return 'profile';
   if (ENDMILL_TYPES.has(t) || t.startsWith('flat')) return 'flat';
   if (t.startsWith('surfac')) return 'surfacing';
   if (t.startsWith('drill')) return 'drill';
