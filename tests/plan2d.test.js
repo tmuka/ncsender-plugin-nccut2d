@@ -287,7 +287,7 @@ test('G-code: no spindle start for a pen or a drag knife', () => {
   const moves = [{ x: 0, y: 0, z: 5, r: true }, { x: 0, y: 0, z: -0.2, f: 300 }, { x: 10, y: 0, z: -0.2, f: 600 }];
   const op = (tool, id) => ({ id, label: id, enabled: true, tool, feeds: { rpm: 18000 }, moves });
   const p = {
-    zero: { x: 0, y: 0, z: 0 }, stock: { width: 20, depth: 20, thickness: 6 },
+    zero: { x: 0, y: 0, z: 0 }, stock: { width: 20, depth: 20, thickness: 6, bottom: -6, top: 0 },
     job: { material: 'mdf', finish: 'balanced', zero: { xy: 'front-left', z: 'top' } },
     ops: [op(lib[0], 'mill'), op(lib[1], 'draw'), op(lib[2], 'knife')],
   };
@@ -301,4 +301,26 @@ test('G-code: no spindle start for a pen or a drag knife', () => {
   }
   const penOnly = N.gcode({ ...p, ops: [op(lib[1], 'draw')] });
   assert.ok(!/\bM0?[34]\b/.test(penOnly) && penOnly.trimEnd().endsWith('M30'));
+});
+
+// ncSender calls a pen's or drag knife's flute_length its Max plunge: how
+// far below the stock's top its tip may go
+test('G-code: a pen or drag knife goes no lower than its Max plunge', () => {
+  const lib = N.normalizeTools([
+    { id: 1, toolId: 1, name: 'End mill', type: 'flat', diameter: 6.35, dimensions: { flute_length: 0.25 } },
+    { id: 21, toolId: 21, name: 'Fine marker', type: 'pen', diameter: 0.5, dimensions: { flute_length: 0.25 } },
+    { id: 22, toolId: 22, name: 'Drag knife', type: 'drag-knife', diameter: 0.25 },
+  ]);
+  const moves = [{ x: 0, y: 0, z: 25, r: true }, { x: 0, y: 0, z: 18, f: 300 }, { x: 10, y: 0, z: 18, f: 600 }, { x: 10, y: 0, z: 25, r: true }];
+  const op = (tool) => ({ id: tool.name, label: tool.name, enabled: true, tool, feeds: { rpm: 18000 }, moves });
+  // Zero on the bed of 20 mm stock: the top is Z20, the moves go to Z18
+  const p = { zero: { x: 0, y: 0, z: 0 }, stock: { width: 20, depth: 20, thickness: 20, bottom: 0, top: 20 },
+    job: { material: 'mdf', finish: 'balanced', zero: { xy: 'front-left', z: 'bed' } }, ops: [] };
+  const zs = (tool) => [...N.gcode({ ...p, ops: [op(tool)] }).matchAll(/(?<!G53 G0 )Z(-?[\d.]+)/g)].map((m) => +m[1]);
+  assert.equal(Math.min(...zs(lib[1])), 19.75);
+  assert.equal(Math.min(...zs(lib[0])), 18, 'an end mill ignores it');
+  assert.equal(Math.min(...zs(lib[2])), 18, 'no Max plunge: as planned');
+  // Zero on top: no lower than Z-0.25
+  const q = { ...p, zero: { x: 0, y: 0, z: 20 }, job: { ...p.job, zero: { xy: 'front-left', z: 'top' } }, ops: [op(lib[1])] };
+  assert.equal(Math.min(...[...N.gcode(q).matchAll(/(?<!G53 G0 )Z(-?[\d.]+)/g)].map((m) => +m[1])), -0.25);
 });

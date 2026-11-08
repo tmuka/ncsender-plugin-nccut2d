@@ -34,12 +34,17 @@ export function gcode(p, opts = {}) {
   for (const t of [...new Map(ops.map((o) => [o.tool.id, o.tool])).values()]) lines.push(comment(`T${toolNumber(t, numbering)}: ${t.name}, ${num(t.diameter)} mm`));
   lines.push('G21 G90 G94 G17');
 
-  let tool = null, last = {}, feed = null, mode = null;
+  // A pen or drag knife goes no lower than its Max plunge (the Tool
+  // Library's flute_length, as ncSender names it for these types) below
+  // the stock's top, whatever the op planned; without one, as planned.
+  const top = Number.isFinite(s.top) ? s.top : (Number.isFinite(s.bottom) ? s.bottom : 0) + s.thickness;
+  let tool = null, last = {}, feed = null, mode = null, floor = -Infinity;
   for (const op of ops) {
     if (!tool || op.tool.id !== tool.id) {
       if (tool) lines.push('M5');
       lines.push(safeZ, `M6 T${toolNumber(op.tool, numbering)}`, comment(op.tool.name));
       tool = op.tool;
+      floor = !spins(op.tool) && op.tool.fluteLength > 0 ? top - op.tool.fluteLength : -Infinity;
       if (spins(op.tool)) {
         lines.push(`M3 S${op.feeds.rpm}`);
         if (spindleDelay > 0) lines.push(`G4 P${spindleDelay}`);
@@ -48,7 +53,7 @@ export function gcode(p, opts = {}) {
     }
     lines.push(comment(`${op.label}${op.detail ? ': ' + op.detail : ''}`));
     for (const m of op.moves) {
-      const x = num(m.x - z0.x), y = num(m.y - z0.y), z = num(m.z - z0.z);
+      const x = num(m.x - z0.x), y = num(m.y - z0.y), z = num(Math.max(m.z, floor) - z0.z);
       // A rapid never moves sideways and down at once: across first, then
       // down (going up: up first). After a tool change Z is unknown, so the
       // first rapid always goes across at the safe height before coming down.
