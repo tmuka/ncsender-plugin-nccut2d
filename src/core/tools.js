@@ -26,7 +26,9 @@ export function toolKind(tool) {
   if (ENDMILL_TYPES.has(t) || t.startsWith('flat')) return 'flat';
   if (t.startsWith('surfac')) return 'surfacing';
   if (t.startsWith('drill')) return 'drill';
-  if (t.startsWith('ball')) return 'ball';
+  // A Tapered Ball Nose (ncSender's tapered-ball) is a ball at its tip: like
+  // a ball it cuts no 2D wall or floor, so no cut here offers or picks it
+  if (t.startsWith('ball') || t.startsWith('tapered ball')) return 'ball';
   if (t.startsWith('v')) return 'vbit';
   if (t.startsWith('chamfer')) return 'chamfer';
   if (t.startsWith('thread')) return 'threadmill';
