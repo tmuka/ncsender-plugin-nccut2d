@@ -272,3 +272,33 @@ test('chamfer review: a counterbore step, a hand-picked V-bit too small, the out
   const t = run(thin, (j) => ({ ...chamfer(j), layers: { POCKET: { cut: 'pocket', depth: 1 } } })).p;
   assert.equal(N.simulate(t, 0.25).collisions.length, 0);
 });
+
+// ncSender refuses M3/M4 while a pen or drag knife is loaded and stops the
+// job: their program leaves the spindle off; other tools keep M3
+test('G-code: no spindle start for a pen or a drag knife', () => {
+  const lib = N.normalizeTools([
+    { id: 1, toolId: 1, toolNumber: 1, name: '1/4" Flat End Mill', type: 'flat', diameter: 6.35 },
+    { id: 21, toolId: 21, name: 'Fine marker', type: 'pen', diameter: 0.5 },
+    { id: 22, toolId: 22, name: 'Drag knife', type: 'drag-knife', diameter: 0.25 },
+  ]);
+  assert.deepEqual(lib.map((t) => N.spins(t)), [true, false, false]);
+  assert.equal(N.spins({ type: 'drag_knife' }), false);
+  assert.equal(N.spins({ type: 'Pen', name: 'cove marker' }), false);
+  const moves = [{ x: 0, y: 0, z: 5, r: true }, { x: 0, y: 0, z: -0.2, f: 300 }, { x: 10, y: 0, z: -0.2, f: 600 }];
+  const op = (tool, id) => ({ id, label: id, enabled: true, tool, feeds: { rpm: 18000 }, moves });
+  const p = {
+    zero: { x: 0, y: 0, z: 0 }, stock: { width: 20, depth: 20, thickness: 6 },
+    job: { material: 'mdf', finish: 'balanced', zero: { xy: 'front-left', z: 'top' } },
+    ops: [op(lib[0], 'mill'), op(lib[1], 'draw'), op(lib[2], 'knife')],
+  };
+  const blocks = N.gcode(p).split(/^M6 /m).slice(1);
+  assert.equal(blocks.length, 3);
+  assert.match(blocks[0], /^M3 S18000$/m);
+  for (const b of blocks.slice(1)) {
+    assert.ok(!/\bM0?[34]\b/.test(b), `spindle start with a non-spinning tool:\n${b}`);
+    assert.ok(!/^G4 /m.test(b) && !/\bS\d/.test(b));
+    assert.match(b, /^G1 .*Z-0\.2/m);
+  }
+  const penOnly = N.gcode({ ...p, ops: [op(lib[1], 'draw')] });
+  assert.ok(!/\bM0?[34]\b/.test(penOnly) && penOnly.trimEnd().endsWith('M30'));
+});

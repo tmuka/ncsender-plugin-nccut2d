@@ -18,8 +18,15 @@ export const FINISHES = {
 
 const ENDMILL_TYPES = new Set(['flat', 'flat end mill', 'endmill', 'end mill', 'flat_end_mill']);
 
+// Tools that don't spin. ncSender (with the drag-knife and pen types)
+// refuses M3/M4 while one is loaded and stops the job, so their program
+// leaves the spindle off. Older ncSender just carries the type along.
+export const NO_SPINDLE = new Set(['pen', 'drag knife']);
+export const spins = (tool) => !NO_SPINDLE.has(tool.kind ?? toolKind(tool));
+
 export function toolKind(tool) {
   const t = String(tool.type || '').toLowerCase().replace(/[-_]/g, ' ');
+  if (NO_SPINDLE.has(t)) return t;
   // Shaped router bits the library files as flat (keyhole, roundover, cove,
   // bowl): they cut a profile, not a wall or a floor
   if (/keyhole|round ?over|\bcove\b|bowl|ogee|dovetail/i.test(tool.name || '')) return 'profile';
