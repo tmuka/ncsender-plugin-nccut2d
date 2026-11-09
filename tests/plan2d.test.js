@@ -272,3 +272,29 @@ test('chamfer review: a counterbore step, a hand-picked V-bit too small, the out
   const t = run(thin, (j) => ({ ...chamfer(j), layers: { POCKET: { cut: 'pocket', depth: 1 } } })).p;
   assert.equal(N.simulate(t, 0.25).collisions.length, 0);
 });
+
+test('a Tapered Ball Nose is filed as a ball and never cuts a 2D shape', () => {
+  // SpeTool W01015 as the Fusion 360 importer saves it: the diameter is the tip
+  const tbn = { id: 11, toolId: 11, toolNumber: 6, name: '1/32" R Tapered Ball Nose', type: 'tapered-ball', diameter: 1.5875, dimensions: { radius: 0.79375, taper_angle: 5.38, flute_length: 25.4, shank_diameter: 6.35 } };
+  assert.equal(N.toolKind(tbn), 'ball');
+  const lib = N.normalizeTools([...LIBRARY, tbn]);
+  assert.equal(lib.find((t) => t.id === 11).kind, 'ball');
+  const a = N.analyze2d(sample());
+  const p = N.plan2d(a, lib, N.defaultJob(a, 6));
+  assert.ok(p.ops.length > 0);
+  assert.ok(p.ops.every((o) => o.tool.id !== 11), p.ops.map((o) => o.tool.name).join(', '));
+  // With only it (and a V-bit), the cuts have no end mill and say so
+  const alone = N.plan2d(a, N.normalizeTools([tbn, LIBRARY[3]]), N.defaultJob(a, 6));
+  assert.ok(alone.ops.every((o) => o.tool.id !== 11));
+  assert.ok(alone.warnings.some((w) => w.kind === 'notool'));
+});
+
+test('a Bull Nose / Bowl bit is filed as bullnose and never cuts a 2D shape', () => {
+  const bowl = { id: 12, toolId: 12, name: '3/4" Bowl & Tray', type: 'bull-nose', diameter: 19.05, dimensions: { radius: 6.35 } };
+  const bull = { id: 13, toolId: 13, name: '1/4" Bull Nose', type: 'bull-nose', diameter: 6.35, dimensions: { radius: 1.5875 } };
+  assert.deepEqual([N.toolKind(bowl), N.toolKind(bull)], ['bullnose', 'bullnose']);
+  const a = N.analyze2d(sample());
+  const p = N.plan2d(a, N.normalizeTools([...LIBRARY, bowl, bull]), N.defaultJob(a, 6));
+  assert.ok(p.ops.length > 0);
+  assert.ok(p.ops.every((o) => o.tool.kind !== 'bullnose'), p.ops.map((o) => o.tool.name).join(', '));
+});
