@@ -70,6 +70,9 @@ export class Viewer {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
+    // Scroll zooms toward the cursor, a pinch toward the middle of the two
+    // fingers: what's under them stays put, as in a map
+    this.controls.zoomToCursor = true;
     this.controls.addEventListener('start', () => { this.userMoved = true; });
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
     const sun = new THREE.DirectionalLight(0xffffff, 1.6);
