@@ -20,6 +20,10 @@ const ENDMILL_TYPES = new Set(['flat', 'flat end mill', 'endmill', 'end mill', '
 
 export function toolKind(tool) {
   const t = String(tool.type || '').toLowerCase().replace(/[-_]/g, ' ');
+  // Bull Nose / Bowl (bull-nose), whatever its name says: a flat bottom
+  // with rounded corners, which would round every 2D cut's floor edges, so
+  // nothing here picks it
+  if (t.startsWith('bull')) return 'bullnose';
   // Shaped router bits the library files as flat (keyhole, roundover, cove,
   // bowl): they cut a profile, not a wall or a floor
   if (/keyhole|round ?over|\bcove\b|bowl|ogee|dovetail/i.test(tool.name || '')) return 'profile';

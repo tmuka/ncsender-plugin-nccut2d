@@ -288,3 +288,13 @@ test('a Tapered Ball Nose is filed as a ball and never cuts a 2D shape', () => {
   assert.ok(alone.ops.every((o) => o.tool.id !== 11));
   assert.ok(alone.warnings.some((w) => w.kind === 'notool'));
 });
+
+test('a Bull Nose / Bowl bit is filed as bullnose and never cuts a 2D shape', () => {
+  const bowl = { id: 12, toolId: 12, name: '3/4" Bowl & Tray', type: 'bull-nose', diameter: 19.05, dimensions: { radius: 6.35 } };
+  const bull = { id: 13, toolId: 13, name: '1/4" Bull Nose', type: 'bull-nose', diameter: 6.35, dimensions: { radius: 1.5875 } };
+  assert.deepEqual([N.toolKind(bowl), N.toolKind(bull)], ['bullnose', 'bullnose']);
+  const a = N.analyze2d(sample());
+  const p = N.plan2d(a, N.normalizeTools([...LIBRARY, bowl, bull]), N.defaultJob(a, 6));
+  assert.ok(p.ops.length > 0);
+  assert.ok(p.ops.every((o) => o.tool.kind !== 'bullnose'), p.ops.map((o) => o.tool.name).join(', '));
+});
