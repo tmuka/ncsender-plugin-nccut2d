@@ -76,7 +76,7 @@ export function mountApp(root, host, engine) {
     up: 'top', analysis: null, part: null,
     // Size: scale in the file's X, Y, Z; lock keeps them together
     scale: null, rot: null, lock: true, fileSize: null, meshKind: null,
-    tools: [], numbering: 'slot', safeZ: null, connected: false, units: 'mm',
+    tools: [], numbering: 'slot', safeZ: null, safeZCommand: false, connected: false, units: 'mm',
     limits: {}, travel: null,
     job: null, plan: null, planning: false, result: null, simChecks: null,
     toast: '',
@@ -99,6 +99,8 @@ export function mountApp(root, host, engine) {
   let planSeq = 0;
 
   // ---------- startup ----------
+  // Whether ncSender runs $SAFEZ; a program waits for the answer (5 s at most)
+  const safeZReady = N.ncSenderHasSafeZ(host.base).then((ok) => { S.safeZCommand = ok; });
   (async () => {
     const [settings, tools, fw, state, mine] = await Promise.all([
       api.get('/api/settings').catch(() => ({})),
@@ -222,11 +224,12 @@ export function mountApp(root, host, engine) {
     S.planning = true;
     if (paths) S.result = null;
     render();
+    if (paths) await safeZReady;
     const started = performance.now();
     try {
       const r = await engine('plan', {
         tools: S.tools, job: { ...S.job, units: S.units }, limits: S.limits, paths,
-        gcodeOptions: { name: S.fileName, numbering: S.numbering, safeZHeightMm: S.safeZ },
+        gcodeOptions: { name: S.fileName, numbering: S.numbering, safeZHeightMm: S.safeZ, safeZCommand: S.safeZCommand },
         timing: { maxRapid: S.maxRapid || 5000 },
       });
       if (seq !== planSeq) return;
