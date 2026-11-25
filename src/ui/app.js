@@ -121,7 +121,13 @@ export function mountApp(root, host, engine) {
     S.numbering = N.makeNumbering(S.numbering, S.tools, S.slots, probe);
     const fs = fw?.settings || {};
     const val = (k) => { const v = parseFloat(fs[k]?.value); return Number.isFinite(v) && v > 0 ? v : null; };
-    S.limits = { maxRpm: val('30') || undefined, minRpm: val('31') || undefined, maxFeed: Math.min(val('110') || Infinity, val('111') || Infinity, Infinity) };
+    // grblHAL can have several spindles ($395, $511-$513, M104 Q): ask which
+    // one is in use and its range, while the machine is idle; else settings
+    const ms = state?.machineState;
+    const grblHal = !!fs['395'] || /grblhal/i.test(state?.greetingMessage || '');
+    const idle = ms?.connected && ms?.status === 'Idle' && (!state?.senderStatus || state.senderStatus === 'idle');
+    const spindles = grblHal && idle ? N.parseSpindles(await N.askSpindles({ base: host.base })) : [];
+    S.limits = { ...N.spindleRange(fs, spindles), maxFeed: Math.min(val('110') || Infinity, val('111') || Infinity, Infinity) };
     if (!Number.isFinite(S.limits.maxFeed)) delete S.limits.maxFeed;
     S.maxRapid = Math.min(val('110') || 5000, val('111') || 5000);
     if (val('130') && val('131')) S.travel = { x: val('130'), y: val('131'), z: val('132') };

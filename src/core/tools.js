@@ -108,6 +108,50 @@ export function vAngle(t) {
   return a > 0 && a < 180 ? a : 90;
 }
 
+// grblHAL's $SPINDLESH lines, one per spindle driver:
+// [SPINDLE:<id>|<number, or - when not enabled>|<type>|<caps>|<name>|<min>,<max>]
+// A * in caps marks the spindle in use (the default one, or the one M104 Q
+// picked). The range is the spindle's own: a VFD driver such as Huanyang v1
+// reads it from the drive and ignores $30/$31. Lines without one are skipped
+// for the range but still listed.
+export function parseSpindles(lines = []) {
+  const out = [];
+  for (const line of lines) {
+    const m = String(line).trim().match(/^\[SPINDLE:([^\]]*)\]$/);
+    if (!m) continue;
+    const [id, num, type, caps = '', name = '', range = ''] = m[1].split('|');
+    const [min, max] = range.split(',').map(Number);
+    out.push({
+      id: Number(id), num: num === '-' || num === '' ? null : Number(num), type: Number(type),
+      current: caps.includes('*'), name: name.trim(),
+      minRpm: Number.isFinite(min) && min > 0 ? min : undefined,
+      maxRpm: Number.isFinite(max) && max > 0 ? max : undefined,
+    });
+  }
+  return out;
+}
+
+// The spindle's speed range. From $SPINDLESH when ncSender could ask
+// (spindles: parseSpindles' list): the one marked in use, and its range.
+// Else from the controller's settings (ncSender's /api/firmware): $30/$31,
+// or $730/$731 when grblHAL's Default spindle ($395) is PWM2. A VFD then
+// reads $30/$31 too, though its driver may use its own range. source names
+// where the numbers came from, for the warning. A range that can't be a
+// router's (a laser's 0-1000 left there, say) is flagged by plan().
+export function spindleRange(settings = {}, spindles = []) {
+  const on = spindles.find((s) => s.current);
+  if (on?.maxRpm > 0) return { maxRpm: on.maxRpm, minRpm: on.minRpm, source: `the ${on.name || 'active'} spindle's range` };
+  const val = (k) => { const v = parseFloat(settings[k]?.value); return Number.isFinite(v) && v > 0 ? v : undefined; };
+  const def = settings['395'];
+  const name = def?.format ? String(def.format).split(',').map((x) => x.trim())[parseInt(def.value, 10)] : undefined;
+  return name === 'PWM2'
+    ? { maxRpm: val('730'), minRpm: val('731'), source: '$730' }
+    : { maxRpm: val('30'), minRpm: val('31'), source: '$30' };
+}
+
+// Below this, a Spindle max is a laser's or a mistake, not a router's
+export const LOW_SPINDLE_MAX = 5000;
+
 export function feeds(tool, material, finish, limits = {}) {
   const m = MATERIALS[material] || MATERIALS.mdf;
   const f = FINISHES[finish] || FINISHES.balanced;

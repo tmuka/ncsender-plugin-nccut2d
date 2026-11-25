@@ -30,3 +30,32 @@ export function ncSenderHasSafeZ(base = '', wait = 5000) {
   const late = new Promise((resolve) => setTimeout(() => resolve(false), wait));
   return Promise.race([check, late]);
 }
+
+// Asks a grblHAL controller which spindles it has, with $SPINDLESH, and
+// resolves the [SPINDLE:...] lines (parseSpindles reads them); [] when there
+// is no answer. ncSender (2.0 on) keeps a quiet command and its reply off the
+// operator's terminal and still hands the reply to the plugin dialog as a
+// cnc-data message. Only ask while the machine is idle and nothing is
+// running: the caller checks. The reply comes all at once, so a short pause
+// after the last line ends it; gives up after wait ms.
+export function askSpindles({ base = '', win = globalThis.window, send, wait = 1500, settle = 250 } = {}) {
+  if (!win?.addEventListener) return Promise.resolve([]);
+  const post = send || ((body) => fetch(base + '/api/send-command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }));
+  return new Promise((resolve) => {
+    const lines = [];
+    let quiet = null;
+    const done = () => { win.removeEventListener('message', hear); clearTimeout(quiet); clearTimeout(late); resolve(lines); };
+    const hear = (e) => {
+      const d = e?.data;
+      if (d?.type !== 'cnc-data' || typeof d.data !== 'string' || !d.data.trim().startsWith('[SPINDLE:')) return;
+      lines.push(d.data.trim());
+      clearTimeout(quiet);
+      quiet = setTimeout(done, settle);
+    };
+    const late = setTimeout(done, wait);
+    win.addEventListener('message', hear);
+    Promise.resolve()
+      .then(() => post({ command: '$SPINDLESH', meta: { sourceId: 'ncCut2D', quiet: { terminalCommand: true, terminalResponse: true, logCommand: true, logResponse: true } } }))
+      .catch(done);
+  });
+}
