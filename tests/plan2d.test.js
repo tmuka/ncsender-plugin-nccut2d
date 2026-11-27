@@ -326,5 +326,5 @@ test('G-code: a pen or drag knife goes no lower than its Max plunge', () => {
   // A deeper pass clamped to where the tool already is: no bare F line
   const deeper = [...moves.slice(0, 3), { x: 10, y: 0, z: 17, f: 300 }, { x: 0, y: 0, z: 17, f: 600 }, { x: 0, y: 0, z: 25, r: true }];
   const g = N.gcode({ ...p, ops: [{ ...op(lib[1]), moves: deeper }] });
-  assert.ok(!/^F\d+$/m.test(g), g);
+  assert.ok(!/^(G[01] )?F\d+$/m.test(g), g);
 });
