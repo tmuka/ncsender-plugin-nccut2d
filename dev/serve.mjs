@@ -20,6 +20,9 @@ createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); return res.end(readFileSync(f));
   }
   if (p === '/api/settings') return json(res, { unitsPreference: process.env.UNITS || 'metric', safeZHeight: -5, tool: { numbering: 'slot' } });
+  // $SAFEZ needs ncSender 2.0.228 or Pro 2.0.326: NCSENDER_VERSION=2.0.227 for the old retract
+  if (p === '/api/app-info') return json(res, { edition: process.env.EDITION || 'community', kiosk: false });
+  if (p === '/api/updates/check') return json(res, { currentVersion: process.env.NCSENDER_VERSION || '2.0.230' });
   if (p === '/api/tools') return json(res, process.env.TOOLS ? JSON.parse(readFileSync(process.env.TOOLS, 'utf8')) : LIBRARY);
   if (p === '/api/firmware') return json(res, { settings: { 30: { value: '24000' }, 110: { value: '5000' }, 111: { value: '5000' }, 130: { value: '800' }, 131: { value: '800' }, 132: { value: '150' } } });
   if (p === '/api/server-state') return json(res, { machineState: { connected: true, tool: 1 } });

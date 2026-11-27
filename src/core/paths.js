@@ -110,18 +110,64 @@ function walk(path, loop, s0, s1, z, f, tab) {
   }
 }
 
+// How far a loop strays from its middle, when that's under half the bit's
+// radius (fd.toolR): the bit's bottom covers the middle all the way round,
+// so going down on it is a plunge, not a ramp. Returns the radius of the
+// circle it stands for (its length / 2 pi), else 0.
+function narrowRadius(loop, toolR) {
+  if (!(toolR > 0) || !(loop.length > 0)) return 0;
+  let a = 0, cx = 0, cy = 0;
+  const p = loop.p;
+  for (let i = 0; i < p.length; i++) {
+    const [x0, y0] = p[i], [x1, y1] = p[(i + 1) % p.length], c = x0 * y1 - x1 * y0;
+    a += c; cx += (x0 + x1) * c; cy += (y0 + y1) * c;
+  }
+  if (Math.abs(a) < 1e-12) return 0;
+  cx /= 3 * a; cy /= 3 * a;
+  for (const [x, y] of p) if (Math.hypot(x - cx, y - cy) >= toolR / 2) return 0;
+  return loop.length / (2 * Math.PI);
+}
+
+// The slope (drop per length) to come down a loop at. The material's ramp
+// angle, except on a narrow loop (narrowRadius): there the ramp only slows
+// a plunge, and a small circle can't be run at the feed either (the
+// machine's acceleration, fd.accel in mm/s2 from $120/$121, caps it near
+// sqrt(a * r)). So it brings Z down at the plunge rate (never faster than
+// the feed) at the speed the machine reaches on it (the feed when accel
+// is unknown). Not for a compression or down-cut bit (fd.packsChips): its
+// chips go down and pack under it in a narrow hole, so it keeps the ramp.
+// As QuickCut's helixSlope.
+function entrySlope(loop, fd) {
+  const ramp = Math.tan((fd.rampAngle * Math.PI) / 180);
+  if (fd.packsChips || !(fd.plunge > 0) || !(fd.feed > 0)) return ramp;
+  const r = narrowRadius(loop, fd.toolR);
+  if (!r) return ramp;
+  const v = fd.accel > 0 ? Math.min(fd.feed, Math.sqrt(fd.accel * r) * 60) : fd.feed;
+  return Math.max(ramp, Math.min(fd.plunge, fd.feed) / v);
+}
+
 // Down from zFrom to zTo along the loop, then one full lap at zTo.
-// Returns where on the loop the lap ended.
+// Returns where on the loop the lap ended. Steeper than 45 degrees
+// (entrySlope) it goes straight down instead.
 function rampAndLap(path, loop, start, zFrom, zTo, fd, tab) {
-  const rampLen = Math.max(0, (zFrom - zTo) / Math.tan((fd.rampAngle * Math.PI) / 180));
-  if (loop.length < 1 || rampLen < 1e-6) {
+  const ramp = Math.tan((fd.rampAngle * Math.PI) / 180);
+  const slope = loop.length < 1 ? ramp : entrySlope(loop, fd), narrow = slope > ramp * 1.001;
+  const rampLen = Math.max(0, (zFrom - zTo) / slope);
+  if (loop.length < 1 || rampLen < 1e-6 || slope > 1) {
     const [x, y] = loop.at(start);
-    path.feed(x, y, tab && tab.inside(start) ? Math.max(zTo, tab.top) : zTo, fd.plunge);
-    walk(path, loop, start, start + loop.length, () => zTo, fd.feed, tab);
+    // A narrow loop going straight down cuts a lap at each step-down, not
+    // one plunge the whole way (a finishing pass's levels can be deep)
+    const zs = narrow ? depthLevels(zFrom, zTo, fd.stepdown) : [zTo];
+    for (const z of zs) {
+      path.feed(x, y, tab && tab.inside(start) ? Math.max(z, tab.top) : z, narrow ? Math.min(fd.plunge, fd.feed) : fd.plunge);
+      walk(path, loop, start, start + loop.length, () => z, fd.feed, tab);
+    }
     return start;
   }
+  // Along a narrow loop's ramp, the feed that lowers Z at the plunge rate
+  const f = narrow ? Math.max(1, Math.min(fd.feed, Math.round((fd.plunge * Math.sqrt(1 + slope * slope)) / slope))) : Math.min(fd.feed, fd.plunge * 2);
   const end = start + rampLen;
-  walk(path, loop, start, end, (s) => zFrom - ((s - start) / rampLen) * (zFrom - zTo), Math.min(fd.feed, fd.plunge * 2), tab);
+  walk(path, loop, start, end, (s) => zFrom - ((s - start) / rampLen) * (zFrom - zTo), f, tab);
   walk(path, loop, end, end + loop.length, () => zTo, fd.feed, tab);
   return end;
 }
@@ -949,7 +995,10 @@ export function toolpaths(p) {
   for (const op of p.ops) {
     const path = new Path(clearZ);
     const zTop = op.kind !== 'face' && op.zTop >= p.analysis.top - 1e-6 ? Math.max(op.zTop, surface) : op.zTop;
-    const r = op.tool.diameter / 2, fd = op.feeds;
+    const r = op.tool.diameter / 2;
+    // What a narrow loop's entry needs (entrySlope): the bit's radius, the
+    // machine's acceleration and whether its chips go down
+    const fd = { ...op.feeds, toolR: r, accel: p.limits?.accel || 0, packsChips: !!op.tool.cut };
     const maxFinish = Math.min(op.tool.fluteLength || Infinity, 3 * op.tool.diameter);
     switch (op.kind) {
       case 'face': face(path, p.stock, r, fd, zTop, op.zBottom); break;

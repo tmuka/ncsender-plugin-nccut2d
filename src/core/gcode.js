@@ -21,8 +21,12 @@ const ZERO_NAMES = {
 };
 
 export function gcode(p, opts = {}) {
-  const { name = 'part', numbering = 'slot', safeZHeightMm = null, spindleDelay = 3 } = opts;
-  const safeZ = Number.isFinite(safeZHeightMm) ? `G53 G0 Z${num(safeZHeightMm)}` : 'G53 G0 Z0';
+  const { name = 'part', numbering = 'slot', safeZHeightMm = null, safeZCommand = false, spindleDelay = 3 } = opts;
+  // safeZCommand: ncSender runs $SAFEZ (see ncsender.js), so the retract
+  // follows its Safe Z setting when the program runs. Older ones get the
+  // height written in.
+  const safeZ = safeZCommand ? '$SAFEZ'
+    : Number.isFinite(safeZHeightMm) ? `G53 G0 Z${num(safeZHeightMm)}` : 'G53 G0 Z0';
   const z0 = p.zero;
   const s = p.stock;
   const lines = [

@@ -11,7 +11,7 @@
 //   'off'
 // and depth is in mm, or null for through (the stock and the break-through).
 import * as C from './clip.js';
-import { feeds, tabDefaults, FINISHES } from './tools.js';
+import { feeds, tabDefaults, FINISHES, LOW_SPINDLE_MAX } from './tools.js';
 import { len } from './units.js';
 import { partLevels, sweptArea, inArea } from './mesh2d.js';
 import { tabSpots } from './paths.js';
@@ -351,7 +351,9 @@ export function plan2d(a, tools, job, limits = {}) {
   // A through cut-out without tabs at its last pass lets the part move
   const tabbed = job.tabs.enabled ? job : { ...job, tabs: { ...job.tabs, enabled: false } };
   const analysis = { top: T, size: [a.size[0], a.size[1], T] };
-  return { analysis, stock, zero: zeroPoint(stock, job.zero), ops, warnings, job: tabbed };
+  // A laser's 0-1000 left in $30, say: every bit would run (and feed) that slow
+  if (limits.maxRpm > 0 && limits.maxRpm < LOW_SPINDLE_MAX) warnings.push({ kind: 'spindle', text: `Spindle max is ${Math.round(limits.maxRpm)} RPM (${limits.source || '$30'}), so every bit is planned at ${Math.round(limits.maxRpm)} RPM and its feed slowed to match. If the spindle goes faster, ${String(limits.source || '$').startsWith('$') ? 'set its maximum in Firmware settings' : 'check its settings in the drive and in Firmware settings'}.` });
+  return { analysis, stock, zero: zeroPoint(stock, job.zero), ops, warnings, job: tabbed, limits };
 }
 
 // The chamfer option on a 2D plan: ncCAM's chamferPass, with the part's

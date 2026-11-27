@@ -10,6 +10,7 @@ export * from './plan2d.js';
 export { partMesh2d } from './mesh2d.js';
 export * from './paths.js';
 export * from './gcode.js';
+export * from './ncsender.js';
 export * from './sim.js';
 export * from './tools.js';
 export * as units from './units.js';

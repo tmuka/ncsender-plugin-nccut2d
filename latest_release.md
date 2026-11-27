@@ -1,22 +1,9 @@
-## ncCut2D v0.1.0: first release
+## What's Changed
 
-Turns a 2D drawing into CNC router G-code, in ncSender.
+### 🐛 Fixes
+- **Holes barely wider than the bit come down quickly.** A 1/2" bit in a 13.4 mm hole used to ramp down at the material's angle (5° in MDF), lap after lap on a circle so small the machine can't get up to speed on it. Now, on any loop that small, Z comes down at the plunge rate, as fast as your machine's acceleration (`$120`/`$121`) allows on that circle. When that's steeper than 45°, it goes straight down a step at a time and cuts a lap at each depth. The first ring of a small round pocket works the same way. Bits named as compression or down-cut keep the slow ramp, because their chips pack down into the hole. It works the same way as in QuickCut.
 
-### ✨ Features
-- **Drawings:** DXF, SVG, PDF and Illustrator (.ai) files, drawn to size.
-- **Choose cuts** per colour layer or per shape:
-  - **Outside**: the part, with tabs.
-  - **Inside**: a hole or window.
-  - **On the line**: a groove; open lines too.
-  - **Pocket**: cleared to a depth.
-  - **Off**.
-- **Stock & Zero:** material, stock size, nine zero points, Z on top of the stock or on the bed, and tabs.
-- **Tools and feeds:** end mills come from your Tool Library, with speeds and feeds for the material and finish.
-- **Add Chamfer to top surfaces** (from ncCAM): a V-bit runs along the top edges the cuts leave. The scrap and the tabs are left clear.
-- **Size fields take any unit:** `1/4"`, `6mm`, `1-1/2 in`, `1,5mm` or `12mm+1/4"`. They're shown in your machine's units, and Up and Down step the value.
-- **Preview & Load:**
-  - The cut plays on a model of the stock and is checked for collisions.
-  - Load into ncSender.
-  - With the remembered **Save to File Manager** switch on, the program is also saved to File Manager › ncCut2D.
-
-Built from siganberg's [ncCAM](https://github.com/siganberg/ncsender-plugin-nccam) and [ncLaser](https://github.com/siganberg/ncsender-plugin-nclaser) (GPL-3.0).
+### ✨ New Features
+- **The speed range of the spindle in use.** grblHAL can have several spindles, and a VFD can use the range it reads from the drive instead of `$30`/`$31`. While the machine is idle, ncCut2D asks which spindle is in use and plans at its range. Without an answer it reads `$30`/`$31`, or `$730`/`$731` when the default spindle is PWM2.
+- **A warning for a low Spindle max.** A Spindle max under 5000 RPM (a laser's 1000 left in `$30`, say) used to slow every bit without a word. Now there's a warning that says where the number came from.
+- **Retracts follow Safe Z.** On ncSender 2.0.228 or Pro 2.0.326 and later, programs retract with `$SAFEZ`, so they follow the Safe Z setting at run time. Older versions keep the `G53 G0` retract.
