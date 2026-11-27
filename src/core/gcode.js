@@ -1,7 +1,8 @@
 // The program: every enabled operation's moves in work coordinates, with
 // a tool change wherever the tool changes. Only G0/G1, G4, M3/M5, M6 and
-// M30, so it runs the same on grblHAL, FluidNC and classic Grbl.
-import { toolNumber, MATERIALS, FINISHES } from './tools.js';
+// M30, so it runs the same on grblHAL, FluidNC and classic Grbl. A pen or
+// drag knife doesn't spin: no M3 (or wait) for it.
+import { toolNumber, spins, MATERIALS, FINISHES } from './tools.js';
 
 const num = (v) => {
   const s = (Math.round(v * 1000) / 1000).toFixed(3).replace(/\.?0+$/, '');
@@ -37,19 +38,28 @@ export function gcode(p, opts = {}) {
   for (const t of [...new Map(ops.map((o) => [o.tool.id, o.tool])).values()]) lines.push(comment(`T${toolNumber(t, numbering)}: ${t.name}, ${num(t.diameter)} mm`));
   lines.push('G21 G90 G94 G17');
 
-  let tool = null, last = {}, feed = null, mode = null;
+  // A pen or drag knife goes no lower than its flute_length below the
+  // stock's top, whatever the op planned; without one, as planned. ncSender's
+  // Tool Library doesn't show that field for these types (the Max plunge
+  // label, siganberg/ncSender#110, was closed), so only an imported tool or
+  // one retyped from an end mill carries it. It only ever raises Z.
+  const top = Number.isFinite(s.top) ? s.top : (Number.isFinite(s.bottom) ? s.bottom : 0) + s.thickness;
+  let tool = null, last = {}, feed = null, mode = null, floor = -Infinity;
   for (const op of ops) {
     if (!tool || op.tool.id !== tool.id) {
       if (tool) lines.push('M5');
       lines.push(safeZ, `M6 T${toolNumber(op.tool, numbering)}`, comment(op.tool.name));
       tool = op.tool;
-      lines.push(`M3 S${op.feeds.rpm}`);
-      if (spindleDelay > 0) lines.push(`G4 P${spindleDelay}`);
+      floor = !spins(op.tool) && op.tool.fluteLength > 0 ? top - op.tool.fluteLength : -Infinity;
+      if (spins(op.tool)) {
+        lines.push(`M3 S${op.feeds.rpm}`);
+        if (spindleDelay > 0) lines.push(`G4 P${spindleDelay}`);
+      } else lines.push(comment('No spindle: this tool does not spin'));
       last = {}; feed = null; mode = null;
     }
     lines.push(comment(`${op.label}${op.detail ? ': ' + op.detail : ''}`));
     for (const m of op.moves) {
-      const x = num(m.x - z0.x), y = num(m.y - z0.y), z = num(m.z - z0.z);
+      const x = num(m.x - z0.x), y = num(m.y - z0.y), z = num(Math.max(m.z, floor) - z0.z);
       // A rapid never moves sideways and down at once: across first, then
       // down (going up: up first). After a tool change Z is unknown, so the
       // first rapid always goes across at the safe height before coming down.
@@ -60,6 +70,8 @@ export function gcode(p, opts = {}) {
         last = { x, y, z };
         continue;
       }
+      // Nowhere to go (a pass clamped to the floor above): no bare F line
+      if (x === last.x && y === last.y && z === last.z) continue;
       const g = m.r ? 'G0' : 'G1';
       let line = g === mode ? '' : g;
       if (x !== last.x) line += ` X${x}`;
@@ -82,7 +94,7 @@ export function runTime(p, { maxRapid = 5000, spindleDelay = 3, toolChange = 30 
   let sec = 0, prev = null, tool = null;
   for (const op of p.ops) {
     if (!op.enabled || !op.moves) continue;
-    if (!tool || op.tool.id !== tool.id) { sec += spindleDelay + (tool ? toolChange : 0); tool = op.tool; }
+    if (!tool || op.tool.id !== tool.id) { sec += (spins(op.tool) ? spindleDelay : 0) + (tool ? toolChange : 0); tool = op.tool; }
     let opSec = 0;
     for (const m of op.moves) {
       if (prev) {
