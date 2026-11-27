@@ -11,6 +11,10 @@ Turns a 2D drawing into CNC router G-code, inside ncSender.
 - **Loads** the program into ncSender, and can also save it to File Manager.
 - **Remembers** your recent drawings and their settings.
 
+![What to cut: a plate drawing with its outline, holes, slot, pockets and a groove, and a cut chosen for each kind of shape](docs/images/what-to-cut.png)
+
+![Preview & Load: the finished plate on the stock after the simulated cut, with the checks passed](docs/images/preview.png)
+
 ## How it works
 
 1. **Drawing**: open the file and set the stock's thickness. Under **What to cut**, choose a cut for each colour layer or shape (click shapes to pick them):
