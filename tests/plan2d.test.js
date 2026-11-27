@@ -303,8 +303,8 @@ test('G-code: no spindle start for a pen or a drag knife', () => {
   assert.ok(!/\bM0?[34]\b/.test(penOnly) && penOnly.trimEnd().endsWith('M30'));
 });
 
-// ncSender calls a pen's or drag knife's flute_length its Max plunge: how
-// far below the stock's top its tip may go
+// A pen's or drag knife's flute_length: how far below the stock's top its
+// tip may go (an imported or retyped tool may carry one)
 test('G-code: a pen or drag knife goes no lower than its Max plunge', () => {
   const lib = N.normalizeTools([
     { id: 1, toolId: 1, name: 'End mill', type: 'flat', diameter: 6.35, dimensions: { flute_length: 0.25 } },
@@ -323,4 +323,8 @@ test('G-code: a pen or drag knife goes no lower than its Max plunge', () => {
   // Zero on top: no lower than Z-0.25
   const q = { ...p, zero: { x: 0, y: 0, z: 20 }, job: { ...p.job, zero: { xy: 'front-left', z: 'top' } }, ops: [op(lib[1])] };
   assert.equal(Math.min(...[...N.gcode(q).matchAll(/(?<!G53 G0 )Z(-?[\d.]+)/g)].map((m) => +m[1])), -0.25);
+  // A deeper pass clamped to where the tool already is: no bare F line
+  const deeper = [...moves.slice(0, 3), { x: 10, y: 0, z: 17, f: 300 }, { x: 0, y: 0, z: 17, f: 600 }, { x: 0, y: 0, z: 25, r: true }];
+  const g = N.gcode({ ...p, ops: [{ ...op(lib[1]), moves: deeper }] });
+  assert.ok(!/^F\d+$/m.test(g), g);
 });

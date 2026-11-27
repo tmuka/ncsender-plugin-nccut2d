@@ -38,9 +38,11 @@ export function gcode(p, opts = {}) {
   for (const t of [...new Map(ops.map((o) => [o.tool.id, o.tool])).values()]) lines.push(comment(`T${toolNumber(t, numbering)}: ${t.name}, ${num(t.diameter)} mm`));
   lines.push('G21 G90 G94 G17');
 
-  // A pen or drag knife goes no lower than its Max plunge (the Tool
-  // Library's flute_length, as ncSender names it for these types) below
-  // the stock's top, whatever the op planned; without one, as planned.
+  // A pen or drag knife goes no lower than its flute_length below the
+  // stock's top, whatever the op planned; without one, as planned. ncSender's
+  // Tool Library doesn't show that field for these types (the Max plunge
+  // label, siganberg/ncSender#110, was closed), so only an imported tool or
+  // one retyped from an end mill carries it. It only ever raises Z.
   const top = Number.isFinite(s.top) ? s.top : (Number.isFinite(s.bottom) ? s.bottom : 0) + s.thickness;
   let tool = null, last = {}, feed = null, mode = null, floor = -Infinity;
   for (const op of ops) {
@@ -68,6 +70,8 @@ export function gcode(p, opts = {}) {
         last = { x, y, z };
         continue;
       }
+      // Nowhere to go (a pass clamped to the floor above): no bare F line
+      if (x === last.x && y === last.y && z === last.z) continue;
       const g = m.r ? 'G0' : 'G1';
       let line = g === mode ? '' : g;
       if (x !== last.x) line += ` X${x}`;
