@@ -353,7 +353,7 @@ export function plan2d(a, tools, job, limits = {}) {
   const analysis = { top: T, size: [a.size[0], a.size[1], T] };
   // A laser's 0-1000 left in $30, say: every bit would run (and feed) that slow
   if (limits.maxRpm > 0 && limits.maxRpm < LOW_SPINDLE_MAX) warnings.push({ kind: 'spindle', text: `Spindle max is ${Math.round(limits.maxRpm)} RPM (${limits.source || '$30'}), so every bit is planned at ${Math.round(limits.maxRpm)} RPM and its feed slowed to match. If the spindle goes faster, ${String(limits.source || '$').startsWith('$') ? 'set its maximum in Firmware settings' : 'check its settings in the drive and in Firmware settings'}.` });
-  return { analysis, stock, zero: zeroPoint(stock, job.zero), ops, warnings, job: tabbed };
+  return { analysis, stock, zero: zeroPoint(stock, job.zero), ops, warnings, job: tabbed, limits };
 }
 
 // The chamfer option on a 2D plan: ncCAM's chamferPass, with the part's

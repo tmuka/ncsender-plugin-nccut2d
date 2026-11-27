@@ -76,9 +76,22 @@ export function normalizeTools(list) {
       kind: toolKind(t), diameter: Number(t.diameter),
       fluteLength: Number(t.dimensions?.flute_length) || null,
       flutes: Number(t.metadata?.flutes) || 2,
+      cut: bitCut(t),
       ...(/^(vbit|chamfer)$/.test(toolKind(t)) ? { angle: vAngle(t) } : {}),
       ...(toolKind(t) === 'threadmill' ? threadMill(t) : {}),
     }));
+}
+
+// Which way the flutes send chips: 'compression' or 'down' (down-cut) by
+// the tool's type or name (not its notes, where "not a compression bit"
+// would count), else ''. A narrow hole's entry needs it: chips pack under
+// these. QuickCut's bitCutKind, plus "Down Spiral" and "Downshear" in a
+// name (an up/down spiral is a compression bit: the same answer). The type
+// counts only for a type ncCut2D cuts with (toolKind 'flat').
+export function bitCut(t) {
+  const type = String(t.type || ''), name = String(t.name || '');
+  if (/^compression$/i.test(type) || /\bcompression\b/i.test(name)) return 'compression';
+  return /^down[-_ ]?cut$/i.test(type) || /\bdown[-_ ]?(cut|shear|spiral)\b/i.test(name) ? 'down' : '';
 }
 
 // A single-form thread mill: its cutting diameter and the pitches it cuts
