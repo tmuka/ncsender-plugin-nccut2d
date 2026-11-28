@@ -6,7 +6,7 @@ import { Viewer, OP_COLORS, STOCK_COLORS } from './viewer.js';
 import * as store from './store.js';
 import { readSvg } from './svg.js';
 import { loadPdfjs } from './pdfjs.js';
-import { wireUnitFields, textToMm, formatMm } from 'ncsender-unit-input';
+import { wireUnitFields, wireSteppers, textToMm, formatMm } from 'ncsender-unit-input';
 
 // Add Chamfer to top surfaces: width in mm (as ncCAM)
 const CHAMFER = { size: 1, min: 0.5, max: 6, step: 0.5 };
@@ -325,6 +325,7 @@ export function mountApp(root, host, engine) {
   }
 
   // ---------- rendering ----------
+  let steppers = null;
   function render() {
     if (!root.isConnected) return;
     const scrolled = root.querySelector('[data-keep-scroll]');
@@ -357,6 +358,9 @@ export function mountApp(root, host, engine) {
       ${S.toast ? `<div class="ncc-toast" role="status">${esc(S.toast)}</div>` : ''}`;
     const again = root.querySelector('[data-keep-scroll]');
     if (again) again.scrollTop = keepTop;
+    // - value + buttons on the length fields (wired again for each redraw)
+    if (steppers) steppers.unwire();
+    steppers = wireSteppers(root, { selector: 'input[data-unit]', imperial, stepOf: (el, imp) => ({ step: imp ? 0.0625 : 1, min: 0 }) });
     const slot = root.querySelector('[data-viewer]');
     if (slot) {
       slot.replaceWith(viewer.el);
@@ -517,7 +521,7 @@ export function mountApp(root, host, engine) {
     const unitless = S.info?.units == null || S.info?.units === 'unitless';
     const pct = Math.round(S.scale * 10000) / 100;
     return `<div class="ncc-card">
-        <div class="ncc-fields">${['X', 'Y'].map((ax, k) => `<div class="ncc-field"><label for="ncc-size${k}">${ax} (${S.units})</label><input id="ncc-size${k}" class="ncc-input ncc-mono" type="text" data-unit="length" data-min="0" autocomplete="off" spellcheck="false" data-size="${k}" value="${fmt(a.size[k])}"></div>`).join('')}</div>
+        <div class="ncc-fields two">${['X', 'Y'].map((ax, k) => `<div class="ncc-field"><label for="ncc-size${k}">${ax} (${S.units})</label><input id="ncc-size${k}" class="ncc-input ncc-mono" type="text" data-unit="length" data-min="0" autocomplete="off" spellcheck="false" data-size="${k}" value="${fmt(a.size[k])}"></div>`).join('')}</div>
         <div class="ncc-row-sub">${pct === 100 ? 'As drawn' : `Scaled to ${pct}%`}${S.info?.units ? ` · the file says ${esc(S.info.units)}` : ''}.${pct !== 100 ? ' <button type="button" class="ncc-link" data-scale="reset">Back to the drawing’s size</button>' : ''}</div>
         ${unitless && pct === 100 && Math.max(raw.w, raw.h) < 50 ? `<div class="ncc-hint">${ICONS.info}<span>Only ${n(Math.max(raw.w, raw.h))} across and the file has no unit: it may be in inches. <button type="button" class="ncc-link" data-scale="inch">Make it inches (× 25.4)</button></span></div>` : ''}
         ${S.info?.notes ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.info.notes)}</span></div>` : ''}
@@ -693,7 +697,7 @@ export function mountApp(root, host, engine) {
           <div class="ncc-stat"><b class="ncc-mono">${used.length || '–'}</b><span>Tools</span></div>
           <div class="ncc-stat"><b class="ncc-mono">${p ? changes : '–'}</b><span>Tool changes</span></div>
         </div>
-        <div class="ncc-card"><div class="ncc-label">Checked</div>${checks()}</div>
+        <div class="ncc-card ncc-fill"><div class="ncc-label">Checked</div>${checks()}</div>
         ${S.slow ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.slow)}</span></div>` : ''}
         <div class="ncc-card">
           <div class="ncc-mono ncc-row-sub" style="margin: 0">${esc(programName())}${r ? ` · ${(r.gcode.split('\n').length - 1).toLocaleString()} lines` : ''}</div>
