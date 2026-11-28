@@ -1,7 +1,7 @@
 // Drives the harness in headless Chrome and saves screenshots to dist/shots.
 // node dev/ui-run.mjs [fixture] (needs dev/serve.mjs running)
 import { chromium } from 'playwright-core';
-const exe = `${process.env.HOME}/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`;
+const exe = process.env.CHROME || `${process.env.HOME}/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`;
 const fixture = process.argv[2] || 'bracket.step';
 const browser = await chromium.launch({ executablePath: exe, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const [vw, vh] = (process.env.VIEW || '1920x1080').split('x').map(Number);
